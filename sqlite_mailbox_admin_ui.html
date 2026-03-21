@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQLite Mailbox Admin</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --ink: #1f2933;
+      --muted: #5c6b73;
+      --panel: rgba(255, 252, 246, 0.92);
+      --line: rgba(31, 41, 51, 0.12);
+      --brand: #a63d40;
+      --brand-2: #7f2f31;
+      --accent: #2f6f62;
+      --shadow: 0 18px 50px rgba(34, 41, 47, 0.12);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(166, 61, 64, 0.16), transparent 28%),
+        radial-gradient(circle at top right, rgba(47, 111, 98, 0.18), transparent 25%),
+        linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+    }
+
+    main {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 28px 18px 38px;
+    }
+
+    .hero {
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 5vw, 3.7rem);
+      font-family: Georgia, "Times New Roman", serif;
+      letter-spacing: -0.03em;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      box-shadow: 0 8px 24px rgba(31, 41, 51, 0.08);
+      font-size: 0.93rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 18px;
+    }
+
+    .stack,
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .span-2 { grid-column: span 2; }
+
+    .card {
+      background: var(--panel);
+      border-radius: var(--radius);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(14px);
+    }
+
+    .head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 18px 20px 0;
+    }
+
+    .head h2, .head h3 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+
+    .body {
+      padding: 18px 20px 20px;
+    }
+
+    form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    input, select, button {
+      font: inherit;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.95);
+      color: var(--ink);
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: rgba(166, 61, 64, 0.48);
+      box-shadow: 0 0 0 4px rgba(166, 61, 64, 0.12);
+    }
+
+    .checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    .checks label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink);
+    }
+
+    .checks input {
+      width: auto;
+      margin: 0;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 16px;
+      cursor: pointer;
+      transition: transform 0.16s ease, opacity 0.16s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.7; cursor: wait; transform: none; }
+
+    .primary {
+      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+      color: #fff7f2;
+      box-shadow: 0 10px 24px rgba(166, 61, 64, 0.24);
+    }
+
+    .secondary {
+      background: rgba(47, 111, 98, 0.12);
+      color: var(--accent);
+    }
+
+    .danger {
+      background: rgba(166, 61, 64, 0.12);
+      color: var(--brand);
+    }
+
+    .quiet {
+      background: rgba(31, 41, 51, 0.08);
+      color: var(--ink);
+    }
+
+    .status {
+      min-height: 48px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(47, 111, 98, 0.1);
+      color: var(--accent);
+      line-height: 1.45;
+    }
+
+    .status.error {
+      background: rgba(166, 61, 64, 0.12);
+      color: var(--brand);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border-radius: 14px;
+      border: 1px solid rgba(31, 41, 51, 0.08);
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(31, 41, 51, 0.08);
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      background: rgba(31, 41, 51, 0.04);
+    }
+
+    .pill {
+      display: inline-flex;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      background: rgba(47, 111, 98, 0.1);
+      color: var(--accent);
+    }
+
+    .pill.off {
+      background: rgba(166, 61, 64, 0.12);
+      color: var(--brand);
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    .token-box, .log {
+      border-radius: 16px;
+      padding: 16px;
+      background: #1f2a33;
+      color: #d9e2ec;
+      max-height: 330px;
+      overflow: auto;
+    }
+
+    .token-box {
+      display: none;
+      background: linear-gradient(135deg, rgba(166, 61, 64, 0.18), rgba(47, 111, 98, 0.18));
+      border: 1px dashed rgba(31, 41, 51, 0.16);
+      color: var(--ink);
+    }
+
+    .token-box.visible { display: block; }
+
+    .muted { color: var(--muted); font-size: 0.88rem; }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+      .grid, .fields { grid-template-columns: 1fr; }
+      .span-2 { grid-column: span 1; }
+      main { padding: 20px 14px 28px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Mailbox Admin Console</h1>
+      <p>Use an environment admin token or an initialized admin username/password. The page itself is loopback-only; data still comes from protected <code>/admin/*</code> APIs.</p>
+      <div class="chips">
+        <span class="chip">Admin mode support: __ADMIN_MODE__</span>
+        <span class="chip">Bearer token or Basic auth</span>
+        <span class="chip">UI path: <code>/admin-ui</code></span>
+      </div>
+    </section>
+
+    <section class="layout">
+      <div class="stack">
+        <article class="card">
+          <div class="head">
+            <h2>Admin Session</h2>
+            <button id="refresh-all" class="quiet" type="button">Refresh Snapshot</button>
+          </div>
+          <div class="body">
+            <form id="auth-form">
+              <div class="fields">
+                <label>
+                  Admin token
+                  <input id="admin-token" type="password" placeholder="Optional: MAILBOX_ADMIN_TOKEN">
+                </label>
+                <label>
+                  Admin username
+                  <input id="admin-username" placeholder="Optional: admin username">
+                </label>
+              </div>
+              <label>
+                Admin password
+                <input id="admin-password" type="password" placeholder="Used for Basic auth if token is blank">
+              </label>
+              <button class="primary" type="submit">Save Session</button>
+            </form>
+            <div id="status-box" class="status" style="margin-top: 14px;">Ready.</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head">
+            <h2>Inventory</h2>
+            <span class="muted">Read-only snapshot</span>
+          </div>
+          <div class="body stack">
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>Harnesses</h3></div>
+              <div id="harnesses-table" class="table-wrap"></div>
+            </section>
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>Projects</h3></div>
+              <div id="projects-table" class="table-wrap"></div>
+            </section>
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>Mailboxes</h3></div>
+              <div id="mailboxes-table" class="table-wrap"></div>
+            </section>
+          </div>
+        </article>
+      </div>
+
+      <div class="stack">
+        <section class="grid">
+          <article class="card">
+            <div class="head"><h2>Harness</h2></div>
+            <div class="body">
+              <form id="harness-form">
+                <label>Harness ID<input name="harness_id" required placeholder="h1"></label>
+                <label>Display name<input name="display_name" placeholder="Harness 1"></label>
+                <div class="checks">
+                  <label><input name="enabled" type="checkbox" checked> enabled</label>
+                </div>
+                <button class="primary" type="submit">Upsert Harness</button>
+              </form>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="head"><h2>Project</h2></div>
+            <div class="body">
+              <form id="project-form">
+                <label>Project ID<input name="project_id" required placeholder="alpha"></label>
+                <label>Harness ID<input name="harness_id" required placeholder="h1"></label>
+                <label>Display name<input name="display_name" placeholder="Alpha"></label>
+                <div class="checks">
+                  <label><input name="enabled" type="checkbox" checked> enabled</label>
+                </div>
+                <button class="primary" type="submit">Upsert Project</button>
+              </form>
+            </div>
+          </article>
+
+          <article class="card span-2">
+            <div class="head"><h2>Mailbox</h2></div>
+            <div class="body">
+              <form id="mailbox-form">
+                <div class="fields">
+                  <label>Address<input name="address" required placeholder="sender@alpha.h1"></label>
+                  <label>
+                    Mailbox type
+                    <select name="mailbox_type">
+                      <option value="session">session</option>
+                      <option value="role">role</option>
+                      <option value="group">group</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="checks">
+                  <label><input name="enabled" type="checkbox" checked> enabled</label>
+                  <label><input name="accept_messages" type="checkbox" checked> accept messages</label>
+                </div>
+                <button class="primary" type="submit">Upsert Mailbox</button>
+              </form>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="head"><h2>Routing</h2></div>
+            <div class="body">
+              <form id="allow-form">
+                <div class="fields">
+                  <label>Project ID<input name="project_id" required placeholder="alpha"></label>
+                  <label>Harness ID<input name="harness_id" required placeholder="h1"></label>
+                </div>
+                <label>Priority<input name="priority" type="number" value="100"></label>
+                <button class="secondary" type="submit">Allow Same Project</button>
+              </form>
+              <form id="deny-form" style="margin-top: 14px;">
+                <label>Deny priority<input name="priority" type="number" value="-1000"></label>
+                <button class="danger" type="submit">Add Deny All</button>
+              </form>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="head"><h2>Resolve</h2></div>
+            <div class="body">
+              <form id="resolve-form">
+                <label>Address<input name="address" required placeholder="worker@alpha.h1"></label>
+                <button class="secondary" type="submit">Admin Resolve</button>
+              </form>
+              <pre id="resolve-result" style="margin-top: 14px;">No resolve yet.</pre>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="head"><h2>Thread Viewer</h2></div>
+            <div class="body">
+              <form id="thread-form">
+                <div class="fields">
+                  <label>Thread ID<input name="thread_id" placeholder="Optional"></label>
+                  <label>Message ID<input name="message_id" placeholder="Optional"></label>
+                </div>
+                <button class="secondary" type="submit">Load Thread</button>
+              </form>
+              <pre id="thread-result" style="margin-top: 14px;">No thread lookup yet.</pre>
+            </div>
+          </article>
+        </section>
+
+        <article class="card">
+          <div class="head"><h2>Harness Tokens</h2><span class="muted">Create, inspect, disable</span></div>
+          <div class="body stack">
+            <form id="create-token-form">
+              <div class="fields">
+                <label>Harness ID<input name="harness_id" required placeholder="h1"></label>
+                <label>Token name<input name="token_name" placeholder="default"></label>
+              </div>
+              <button class="primary" type="submit">Create Harness Token</button>
+            </form>
+
+            <div id="token-once" class="token-box">
+              <strong>Copy this token now. It is shown once only.</strong>
+              <pre id="token-once-value" style="margin-top: 10px;"></pre>
+            </div>
+
+            <form id="token-filter-form">
+              <div class="fields">
+                <label>Harness ID<input name="harness_id" required placeholder="h1"></label>
+              </div>
+              <button class="secondary" type="submit">Load Tokens</button>
+            </form>
+
+            <div id="tokens-table" class="table-wrap"></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head"><h2>Agent Login Config</h2><span class="muted">Preview derived addresses and generate mailbox_client.json</span></div>
+          <div class="body stack">
+            <form id="agent-config-form">
+              <div class="fields">
+                <label>Base URL<input name="base_url" placeholder="http://127.0.0.1:8787"></label>
+                <label>Harness ID<input name="harness_id" required placeholder="codex"></label>
+              </div>
+              <div class="fields">
+                <label>Project ID<input name="project_id" required placeholder="mail4agent"></label>
+                <label>Roles (comma separated)<input name="roles_csv" placeholder="planner, reviewer"></label>
+              </div>
+              <div class="fields">
+                <label>Session<input name="session" placeholder="main"></label>
+                <label>Agent name<input name="agent_name" placeholder="codex-main"></label>
+              </div>
+              <div class="fields">
+                <label>Local part override<input name="local_part" placeholder="optional"></label>
+                <label>
+                  Session mailbox type
+                  <select name="mailbox_type">
+                    <option value="">auto</option>
+                    <option value="session">session</option>
+                    <option value="role">role</option>
+                    <option value="group">group</option>
+                  </select>
+                </label>
+              </div>
+              <div class="fields">
+                <label>Expires in seconds<input name="expires_in_seconds" type="number" value="86400"></label>
+                <label>Harness token for run snippet<input name="harness_token" type="password" placeholder="Optional, not stored"></label>
+              </div>
+              <div class="checks">
+                <label><input name="accept_messages" type="checkbox" checked> new mailboxes accept messages</label>
+              </div>
+              <button class="primary" type="submit">Preview And Generate</button>
+            </form>
+
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>Session Preview</h3></div>
+              <pre id="agent-preview-result">No preview yet.</pre>
+            </section>
+
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>mailbox_client.json</h3></div>
+              <pre id="agent-config-result">No config yet.</pre>
+            </section>
+
+            <section>
+              <div class="head" style="padding: 0 0 10px;"><h3>Run Snippet</h3></div>
+              <pre id="agent-command-result">No snippet yet.</pre>
+            </section>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head"><h2>Activity Log</h2><span class="muted">Newest on top</span></div>
+          <div class="body">
+            <div class="log">
+              <pre id="activity-log">Admin UI ready.</pre>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const storageKey = "sqlite_mailbox_admin_ui";
+    const state = { lastTokenHarnessId: "", latestPlainHarnessToken: "" };
+    const els = {
+      adminToken: document.getElementById("admin-token"),
+      adminUsername: document.getElementById("admin-username"),
+      adminPassword: document.getElementById("admin-password"),
+      statusBox: document.getElementById("status-box"),
+      activityLog: document.getElementById("activity-log"),
+      harnessesTable: document.getElementById("harnesses-table"),
+      projectsTable: document.getElementById("projects-table"),
+      mailboxesTable: document.getElementById("mailboxes-table"),
+      refreshAll: document.getElementById("refresh-all"),
+      tokenOnce: document.getElementById("token-once"),
+      tokenOnceValue: document.getElementById("token-once-value"),
+      tokensTable: document.getElementById("tokens-table"),
+      resolveResult: document.getElementById("resolve-result"),
+      threadResult: document.getElementById("thread-result"),
+      agentPreviewResult: document.getElementById("agent-preview-result"),
+      agentConfigResult: document.getElementById("agent-config-result"),
+      agentCommandResult: document.getElementById("agent-command-result"),
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formatJson(value) {
+      return JSON.stringify(value, null, 2);
+    }
+
+    function setStatus(message, isError = false) {
+      els.statusBox.textContent = message;
+      els.statusBox.classList.toggle("error", isError);
+    }
+
+    function logEvent(label, payload) {
+      const line = `[${new Date().toLocaleTimeString()}] ${label}\n${formatJson(payload)}\n\n`;
+      els.activityLog.textContent = line + els.activityLog.textContent;
+    }
+
+    function authHeaders() {
+      const token = els.adminToken.value.trim();
+      if (token) {
+        return { Authorization: `Bearer ${token}` };
+      }
+      const username = els.adminUsername.value.trim();
+      const password = els.adminPassword.value;
+      if (username || password) {
+        return { Authorization: `Basic ${btoa(`${username}:${password}`)}` };
+      }
+      return {};
+    }
+
+    async function api(method, path, body) {
+      const headers = { Accept: "application/json", ...authHeaders() };
+      const options = { method, headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(body);
+      }
+      const response = await fetch(path, options);
+      const payload = await response.json().catch(async () => ({ ok: false, error: await response.text() }));
+      if (!response.ok) {
+        throw { status: response.status, payload };
+      }
+      return payload;
+    }
+
+    function setBusy(button, busy) {
+      if (button) {
+        button.disabled = busy;
+      }
+    }
+
+    function boolPill(value) {
+      return value ? '<span class="pill">enabled</span>' : '<span class="pill off">disabled</span>';
+    }
+
+    function renderTable(container, columns, rows) {
+      if (!rows.length) {
+        container.innerHTML = '<div style="padding: 14px;" class="muted">No rows.</div>';
+        return;
+      }
+      const head = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("");
+      const body = rows.map((row) => {
+        const cells = columns.map((column) => `<td>${column.render ? column.render(row) : escapeHtml(row[column.key])}</td>`).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function renderHarnesses(rows) {
+      renderTable(els.harnessesTable, [
+        { key: "harness_id", label: "Harness" },
+        { key: "display_name", label: "Display" },
+        { key: "enabled", label: "State", render: (row) => boolPill(row.enabled) },
+        { key: "created_at", label: "Created" },
+      ], rows);
+    }
+
+    function renderProjects(rows) {
+      renderTable(els.projectsTable, [
+        { key: "project_id", label: "Project" },
+        { key: "harness_id", label: "Harness" },
+        { key: "display_name", label: "Display" },
+        { key: "enabled", label: "State", render: (row) => boolPill(row.enabled) },
+      ], rows);
+    }
+
+    function renderMailboxes(rows) {
+      renderTable(els.mailboxesTable, [
+        { key: "address", label: "Address" },
+        { key: "mailbox_type", label: "Type" },
+        { key: "accept_messages", label: "Accepts", render: (row) => row.accept_messages ? "yes" : "no" },
+        { key: "enabled", label: "State", render: (row) => boolPill(row.enabled) },
+      ], rows);
+    }
+
+    function renderTokens(rows) {
+      if (!rows.length) {
+        els.tokensTable.innerHTML = '<div style="padding: 14px;" class="muted">No tokens for this harness.</div>';
+        return;
+      }
+      const body = rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.token_id)}</td>
+          <td>${escapeHtml(row.token_name ?? "")}</td>
+          <td>${row.enabled ? '<span class="pill">enabled</span>' : '<span class="pill off">disabled</span>'}</td>
+          <td>${escapeHtml(row.created_at ?? "")}</td>
+          <td>${escapeHtml(row.last_used_at ?? "")}</td>
+          <td>${row.enabled ? `<button class="danger" type="button" data-token-id="${escapeHtml(row.token_id)}">Disable</button>` : ""}</td>
+        </tr>
+      `).join("");
+      els.tokensTable.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>State</th>
+              <th>Created</th>
+              <th>Last used</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      `;
+      els.tokensTable.querySelectorAll("button[data-token-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          setBusy(button, true);
+          try {
+            const tokenId = Number(button.dataset.tokenId);
+            const payload = await api("POST", "/admin/disable_harness_token", { token_id: tokenId });
+            logEvent("disable_harness_token", payload);
+            setStatus(`Disabled token ${tokenId}.`);
+            await loadTokens();
+          } catch (error) {
+            handleError("disable_harness_token", error);
+          } finally {
+            setBusy(button, false);
+          }
+        });
+      });
+    }
+
+    function handleError(label, error) {
+      const payload = error?.payload ?? { ok: false, error: String(error) };
+      const prefix = error?.status ? `HTTP ${error.status}` : "Request failed";
+      setStatus(`${prefix}: ${payload.error ?? "request failed"}`, true);
+      logEvent(`${label} error`, payload);
+    }
+
+    async function refreshSnapshot() {
+      setBusy(els.refreshAll, true);
+      try {
+        const [harnesses, projects, mailboxes] = await Promise.all([
+          api("GET", "/admin/list_harnesses"),
+          api("GET", "/admin/list_projects"),
+          api("GET", "/admin/list_mailboxes"),
+        ]);
+        renderHarnesses(harnesses.harnesses);
+        renderProjects(projects.projects);
+        renderMailboxes(mailboxes.mailboxes);
+        setStatus(`Snapshot refreshed using ${els.adminToken.value.trim() ? "Bearer token" : "Basic auth or bootstrap"} mode.`);
+        logEvent("snapshot", {
+          harnesses: harnesses.harnesses.length,
+          projects: projects.projects.length,
+          mailboxes: mailboxes.mailboxes.length,
+        });
+      } catch (error) {
+        handleError("snapshot", error);
+      } finally {
+        setBusy(els.refreshAll, false);
+      }
+    }
+
+    async function loadTokens() {
+      const harnessId = state.lastTokenHarnessId || document.querySelector('#token-filter-form input[name="harness_id"]').value.trim();
+      if (!harnessId) {
+        els.tokensTable.innerHTML = '<div style="padding: 14px;" class="muted">Enter a harness ID first.</div>';
+        return;
+      }
+      state.lastTokenHarnessId = harnessId;
+      const payload = await api("GET", `/admin/list_harness_tokens?harness_id=${encodeURIComponent(harnessId)}`);
+      renderTokens(payload.tokens);
+      logEvent("list_harness_tokens", { harness_id: harnessId, count: payload.tokens.length });
+    }
+
+    function rememberSession() {
+      localStorage.setItem(storageKey, JSON.stringify({
+        adminToken: els.adminToken.value.trim(),
+        adminUsername: els.adminUsername.value.trim(),
+      }));
+    }
+
+    function boolValue(form, name) {
+      return form.querySelector(`[name="${name}"]`).checked;
+    }
+
+    function parseCsvList(value) {
+      return String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    function buildAgentPreviewBody(form) {
+      const body = {
+        harness_id: form.harness_id.value.trim(),
+        project_id: form.project_id.value.trim(),
+        accept_messages: boolValue(form, "accept_messages"),
+        expires_in_seconds: Number(form.expires_in_seconds.value || 86400),
+      };
+      const roles = parseCsvList(form.roles_csv.value);
+      if (roles.length === 1) {
+        body.role = roles[0];
+      }
+      if (roles.length) {
+        body.roles = roles;
+      }
+      if (form.session.value.trim()) {
+        body.session = form.session.value.trim();
+      }
+      if (form.agent_name.value.trim()) {
+        body.agent_name = form.agent_name.value.trim();
+      }
+      if (form.local_part.value.trim()) {
+        body.local_part = form.local_part.value.trim();
+      }
+      if (form.mailbox_type.value) {
+        body.mailbox_type = form.mailbox_type.value;
+      }
+      return body;
+    }
+
+    function buildAgentConfigJson(form, preview) {
+      const config = {
+        base_url: form.base_url.value.trim() || window.location.origin,
+        project_id: preview.project_id,
+      };
+      if (Array.isArray(preview.roles) && preview.roles.length) {
+        config.roles = preview.roles;
+      }
+      if (preview.session_name) {
+        config.session = preview.session_name;
+      }
+      if (preview.agent_name) {
+        config.agent_name = preview.agent_name;
+      }
+      if (!config.roles && form.local_part.value.trim()) {
+        config.local_part = form.local_part.value.trim();
+      }
+      if (form.mailbox_type.value) {
+        config.mailbox_type = form.mailbox_type.value;
+      }
+      return config;
+    }
+
+    function buildRunSnippet(form, config) {
+      const harnessToken = form.harness_token.value.trim() || state.latestPlainHarnessToken || "<HARNESS_TOKEN>";
+      return [
+        `$env:MAILBOX_TOKEN = "${harnessToken}"`,
+        '$env:MAILBOX_CONFIG = ".\\\\mailbox_client.json"',
+        "python .\\\\codex_mailbox_demo_agent.py",
+        "",
+        formatJson(config),
+      ].join("\n");
+    }
+
+    document.getElementById("auth-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      rememberSession();
+      setStatus("Admin session saved. Refreshing snapshot...");
+      await refreshSnapshot();
+    });
+
+    document.getElementById("harness-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/upsert_harness", {
+          harness_id: form.harness_id.value.trim(),
+          display_name: form.display_name.value.trim() || null,
+          enabled: boolValue(form, "enabled"),
+        });
+        logEvent("upsert_harness", payload);
+        setStatus(`Harness ${form.harness_id.value.trim()} saved.`);
+        await refreshSnapshot();
+      } catch (error) {
+        handleError("upsert_harness", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("project-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/upsert_project", {
+          project_id: form.project_id.value.trim(),
+          harness_id: form.harness_id.value.trim(),
+          display_name: form.display_name.value.trim() || null,
+          enabled: boolValue(form, "enabled"),
+        });
+        logEvent("upsert_project", payload);
+        setStatus(`Project ${form.project_id.value.trim()}.${form.harness_id.value.trim()} saved.`);
+        await refreshSnapshot();
+      } catch (error) {
+        handleError("upsert_project", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("mailbox-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/upsert_mailbox", {
+          address: form.address.value.trim(),
+          mailbox_type: form.mailbox_type.value,
+          enabled: boolValue(form, "enabled"),
+          accept_messages: boolValue(form, "accept_messages"),
+        });
+        logEvent("upsert_mailbox", payload);
+        setStatus(`Mailbox ${form.address.value.trim()} saved.`);
+        await refreshSnapshot();
+      } catch (error) {
+        handleError("upsert_mailbox", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("allow-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/allow_same_project", {
+          project_id: form.project_id.value.trim(),
+          harness_id: form.harness_id.value.trim(),
+          priority: Number(form.priority.value || 100),
+        });
+        logEvent("allow_same_project", payload);
+        setStatus("Added allow_same_project policy.");
+      } catch (error) {
+        handleError("allow_same_project", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("deny-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/deny_all", {
+          priority: Number(form.priority.value || -1000),
+        });
+        logEvent("deny_all", payload);
+        setStatus("Added deny_all policy.");
+      } catch (error) {
+        handleError("deny_all", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("resolve-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/resolve", { address: form.address.value.trim() });
+        els.resolveResult.textContent = formatJson(payload);
+        logEvent("admin_resolve", payload);
+        setStatus(`Resolved ${form.address.value.trim()}.`);
+      } catch (error) {
+        els.resolveResult.textContent = formatJson(error?.payload ?? { ok: false, error: String(error) });
+        handleError("admin_resolve", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("thread-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const params = new URLSearchParams();
+        if (form.thread_id.value.trim()) {
+          params.set("thread_id", form.thread_id.value.trim());
+        }
+        if (form.message_id.value.trim()) {
+          params.set("message_id", form.message_id.value.trim());
+        }
+        if (!params.toString()) {
+          throw { payload: { ok: false, error: "Enter thread_id or message_id." } };
+        }
+        const payload = await api("GET", `/admin/thread?${params.toString()}`);
+        els.threadResult.textContent = formatJson(payload);
+        logEvent("admin_thread", {
+          thread_id: payload.thread?.thread_id,
+          message_count: payload.thread?.message_count,
+        });
+        setStatus(`Loaded thread ${payload.thread?.thread_id || "(unknown)"}.`);
+      } catch (error) {
+        els.threadResult.textContent = formatJson(error?.payload ?? { ok: false, error: String(error) });
+        handleError("admin_thread", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("create-token-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const payload = await api("POST", "/admin/create_harness_token", {
+          harness_id: form.harness_id.value.trim(),
+          token_name: form.token_name.value.trim() || null,
+        });
+        state.lastTokenHarnessId = form.harness_id.value.trim();
+        state.latestPlainHarnessToken = payload.token;
+        els.tokenOnce.classList.add("visible");
+        els.tokenOnceValue.textContent = payload.token;
+        const agentConfigForm = document.getElementById("agent-config-form");
+        if (agentConfigForm.harness_id && !agentConfigForm.harness_id.value.trim()) {
+          agentConfigForm.harness_id.value = state.lastTokenHarnessId;
+        }
+        if (agentConfigForm.harness_token) {
+          agentConfigForm.harness_token.value = payload.token;
+        }
+        logEvent("create_harness_token", { ok: payload.ok, token_id: payload.token_id, harness_id: state.lastTokenHarnessId });
+        setStatus(`Created token ${payload.token_id} for ${state.lastTokenHarnessId}. Copy it now.`);
+        await loadTokens();
+      } catch (error) {
+        handleError("create_harness_token", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("agent-config-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        const body = buildAgentPreviewBody(form);
+        const payload = await api("POST", "/admin/preview_agent_session", body);
+        const preview = payload.preview;
+        const config = buildAgentConfigJson(form, preview);
+        els.agentPreviewResult.textContent = formatJson(preview);
+        els.agentConfigResult.textContent = formatJson(config);
+        els.agentCommandResult.textContent = buildRunSnippet(form, config);
+        logEvent("preview_agent_session", {
+          harness_id: preview.harness_id,
+          project_id: preview.project_id,
+          addresses: preview.allowed_addresses,
+        });
+        setStatus(`Generated config for ${preview.project_id}.${preview.harness_id}.`);
+      } catch (error) {
+        els.agentPreviewResult.textContent = formatJson(error?.payload ?? { ok: false, error: String(error) });
+        els.agentConfigResult.textContent = "No config yet.";
+        els.agentCommandResult.textContent = "No snippet yet.";
+        handleError("preview_agent_session", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    document.getElementById("token-filter-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true);
+      try {
+        state.lastTokenHarnessId = form.harness_id.value.trim();
+        await loadTokens();
+        setStatus(`Loaded tokens for ${state.lastTokenHarnessId}.`);
+      } catch (error) {
+        handleError("list_harness_tokens", error);
+      } finally {
+        setBusy(button, false);
+      }
+    });
+
+    els.refreshAll.addEventListener("click", refreshSnapshot);
+
+    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    els.adminToken.value = stored.adminToken || "";
+    els.adminUsername.value = stored.adminUsername || "";
+    document.querySelector('#agent-config-form input[name="base_url"]').value = window.location.origin;
+    renderHarnesses([]);
+    renderProjects([]);
+    renderMailboxes([]);
+    els.tokensTable.innerHTML = '<div style="padding: 14px;" class="muted">Enter a harness ID to load tokens.</div>';
+    refreshSnapshot();
+  </script>
+</body>
+</html>
