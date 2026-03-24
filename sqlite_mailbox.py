@@ -2618,6 +2618,61 @@ class SQLiteMailbox:
                 for item in summaries[:limit]
             ]
 
+    def get_inbox_messages_for_mailbox(
+        self,
+        *,
+        to_address: str,
+        limit: int = 20,
+        message_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        mailbox = self.resolve_address(to_address)
+        if limit == 0:
+            return []
+
+        normalized_message_type = None
+        if message_type is not None:
+            normalized_message_type = str(message_type).strip()
+            if not normalized_message_type:
+                normalized_message_type = None
+
+        with self.connect() as conn:
+            params: list[Any] = [mailbox.mailbox_id, mailbox.mailbox_id]
+            message_type_filter = ""
+            if normalized_message_type is not None:
+                message_type_filter = "AND m.message_type = ?"
+                params.append(normalized_message_type)
+            params.append(limit)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT
+                    m.message_id
+                FROM messages m
+                WHERE (
+                        m.from_mailbox_id = ?
+                        OR EXISTS (
+                            SELECT 1
+                            FROM deliveries d
+                            WHERE d.message_id = m.message_id
+                              AND d.to_mailbox_id = ?
+                        )
+                      )
+                  {message_type_filter}
+                ORDER BY m.created_at DESC, m.message_id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            if not rows:
+                return []
+            messages: list[dict[str, Any]] = []
+            for row in rows:
+                loaded = self._load_message(conn, str(row["message_id"]))
+                if loaded is not None:
+                    messages.append(loaded)
+            return messages
+
     def mark_thread_read(
         self,
         *,

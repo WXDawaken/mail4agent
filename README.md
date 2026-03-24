@@ -5,11 +5,11 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 ## What It Does
 
 - Stores harnesses, projects, mailboxes, messages, deliveries, and routing in SQLite
-- Exposes HTTP endpoints for `send`, `claim`, `ack`, `nack`, `heartbeat`, `retry-queue`, `resolve`, `message`, `thread`, `thread-summaries`, and `mark-thread-read`
+- Exposes HTTP endpoints for `send`, `claim`, `ack`, `nack`, `heartbeat`, `retry-queue`, `resolve`, `message`, `thread`, `inbox`, `thread-summaries`, and `mark-thread-read`
 - Protects admin routes with either an env admin token or admin username/password
 - Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
-- Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/thread-summaries/mark-thread-read/reply/consume
+- Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume
 - Includes repo-local dogfood helpers for medium planner/reviewer runs and a high-effort operator run
 - Stays dependency-free: Python standard library only
 
@@ -91,7 +91,7 @@ python3 ./sqlite_mailbox_http.py --db ./mailbox.sqlite --host 127.0.0.1 --port 8
 - Repeating the same login identity reuses the same in-memory session token until it expires
 - Restarting the server invalidates all agent session tokens
 - `GET /whoami` exposes session expiry metadata such as `expires_at` and `expires_in_seconds`
-- `GET /whoami` for agent sessions also exposes `default_inbox_address`, which thread-state commands can use when `--to-address` is omitted
+- `GET /whoami` for agent sessions also exposes `default_inbox_address`, which `inbox`, `thread-summaries`, and `mark-thread-read` can use when `--to-address` is omitted
 
 ## CLI Usage
 
@@ -183,6 +183,24 @@ Bash equivalent:
 
 ```bash
 python3 ./client.py --format text thread --message-id <MESSAGE_ID>
+```
+
+List recent visible messages for the current session inbox:
+
+```powershell
+python .\client.py inbox --limit 10
+```
+
+Bash equivalent:
+
+```bash
+python3 ./client.py inbox --limit 10
+```
+
+Filter that inbox view by message type when needed:
+
+```powershell
+python .\client.py inbox --limit 10 --message-type codex.task
 ```
 
 List thread summaries for the current session inbox:
@@ -313,7 +331,7 @@ That operator path logs in with the harness token, targets the `operator@mail4ag
 
 - `mailbox.sqlite` and other SQLite database files are intentionally ignored by git
 - CLI output defaults to JSON; pass `--format text` for a more readable terminal view
-- `client.py thread-summaries` now uses the logged-in session's `default_inbox_address` when available, and `client.py mark-thread-read --thread-id <THREAD_ID>` uses that same default; both commands still accept explicit `--to-address <MAILBOX>` overrides
+- `client.py inbox`, `client.py thread-summaries`, and `client.py mark-thread-read --thread-id <THREAD_ID>` now use the logged-in session's `default_inbox_address` when available; each command still accepts an explicit `--to-address <MAILBOX>` override
 - `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token

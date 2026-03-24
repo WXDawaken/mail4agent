@@ -407,6 +407,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
         auth: AuthContext,
         *,
         missing_error: str,
+        purpose: str = "thread-state routes",
     ) -> Any | None:
         resolved_address = requested_address
         if not resolved_address:
@@ -423,7 +424,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
         if auth.kind == "agent_session":
             if canonical not in set(auth.allowed_addresses):
                 raise PermissionError(
-                    f"address {canonical} is not available in the current agent session for thread summaries"
+                    f"address {canonical} is not available in the current agent session for {purpose}"
                 )
             return self.mailbox.resolve_address(canonical)
 
@@ -814,6 +815,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 requested_address,
                 auth,
                 missing_error="missing query parameter: to_address",
+                purpose="thread summaries",
             )
             if mailbox is None:
                 return 200, self._with_caller({"ok": True, "threads": []}, auth)
@@ -822,6 +824,26 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 limit=limit,
             )
             return 200, self._with_caller({"ok": True, "threads": threads}, auth)
+
+        if method == "GET" and path == "/inbox":
+            requested_address = (query.get("to_address") or [None])[0]
+            limit_text = (query.get("limit") or ["20"])[0]
+            limit = int(limit_text)
+            message_type = (query.get("message_type") or [None])[0]
+            mailbox = self._resolve_thread_state_mailbox(
+                requested_address,
+                auth,
+                missing_error="missing query parameter: to_address",
+                purpose="inbox listing",
+            )
+            if mailbox is None:
+                return 200, self._with_caller({"ok": True, "messages": []}, auth)
+            messages = self.mailbox.get_inbox_messages_for_mailbox(
+                to_address=mailbox.address,
+                limit=limit,
+                message_type=message_type,
+            )
+            return 200, self._with_caller({"ok": True, "messages": messages}, auth)
 
         if method == "POST" and path == "/resolve":
             requested_address = _require(body, "address", str)
@@ -918,6 +940,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 _optional(body, "to_address", str),
                 auth,
                 missing_error="missing required field: to_address",
+                purpose="thread read updates",
             )
             if mailbox is None:
                 return 200, self._with_caller({"ok": False}, auth)

@@ -295,6 +295,31 @@ class MailboxHTTPClient:
             query=query,
         )
 
+    def get_inbox(
+        self,
+        *,
+        to_address: str | None = None,
+        limit: int = 20,
+        message_type: str | None = None,
+    ) -> dict[str, Any]:
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        effective_to_address = to_address or self._effective_inbox_address()
+        if not effective_to_address and self._current_session_profile() is None:
+            raise ValueError(
+                "to_address is required unless configured locally or provided by an agent session login"
+            )
+        query = {"limit": str(limit)}
+        if effective_to_address:
+            query["to_address"] = effective_to_address
+        if message_type is not None:
+            query["message_type"] = message_type
+        return self._request_json(
+            "GET",
+            "/inbox",
+            query=query,
+        )
+
     def mark_thread_read(
         self,
         *,

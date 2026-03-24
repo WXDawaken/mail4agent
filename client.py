@@ -151,6 +151,15 @@ def _build_parser() -> argparse.ArgumentParser:
     retry_queue_parser.add_argument("--project-id")
     retry_queue_parser.add_argument("--limit", type=int, default=50)
 
+    inbox_parser = subparsers.add_parser(
+        "inbox",
+        parents=[common],
+        help="list recent visible messages for one mailbox",
+    )
+    inbox_parser.add_argument("--to-address")
+    inbox_parser.add_argument("--limit", type=int, default=20)
+    inbox_parser.add_argument("--message-type")
+
     thread_summaries_parser = subparsers.add_parser(
         "thread-summaries",
         parents=[common],
@@ -340,6 +349,12 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             allow_missing=bool(args.allow_missing),
         )
         return {"ok": thread is not None, "thread": thread}
+    if args.command == "inbox":
+        return client.get_inbox(
+            to_address=args.to_address,
+            limit=args.limit,
+            message_type=args.message_type,
+        )
     if args.command == "thread-summaries":
         return client.get_thread_summaries(
             to_address=args.to_address,
@@ -992,6 +1007,8 @@ def _format_text_payload(payload: dict[str, Any], args: argparse.Namespace) -> s
         return _format_message_wrapper_text(payload)
     if command == "thread":
         return _format_thread_text(payload)
+    if command == "inbox":
+        return _format_inbox_text(payload)
     if command == "thread-summaries":
         return _format_thread_summaries_text(payload)
     if command == "retry-queue":
@@ -1151,6 +1168,24 @@ def _format_thread_summaries_text(payload: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"thread[{index}]:")
         lines.extend(_indent_lines(_format_thread_summary_lines(thread), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_inbox_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        lines.append("")
+        lines.append("messages: none")
+        return "\n".join(lines)
+    for index, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            continue
+        lines.append("")
+        lines.append(f"message[{index}]:")
+        lines.extend(_indent_lines(_format_message_lines(message), prefix="  "))
     return "\n".join(lines)
 
 
