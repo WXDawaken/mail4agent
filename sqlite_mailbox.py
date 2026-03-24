@@ -2625,12 +2625,14 @@ class SQLiteMailbox:
         limit: int = 20,
         message_type: str | None = None,
         since: str | None = None,
+        unread_only: bool = False,
     ) -> list[dict[str, Any]]:
         if limit < 0:
             raise ValueError("limit must be >= 0")
         mailbox = self.resolve_address(to_address)
         if limit == 0:
             return []
+        unread_only = bool(unread_only)
 
         normalized_message_type = None
         if message_type is not None:
@@ -2652,7 +2654,7 @@ class SQLiteMailbox:
                 )
 
         with self.connect() as conn:
-            params: list[Any] = [mailbox.mailbox_id, mailbox.mailbox_id]
+            params: list[Any] = [mailbox.mailbox_id, mailbox.mailbox_id, mailbox.mailbox_id]
             message_type_filter = ""
             if normalized_message_type is not None:
                 message_type_filter = "AND m.message_type = ?"
@@ -2661,12 +2663,26 @@ class SQLiteMailbox:
             if normalized_since is not None:
                 since_filter = "AND m.created_at >= ?"
                 params.append(normalized_since)
+            unread_filter = ""
+            if unread_only:
+                unread_filter = """
+                  AND (
+                        last_read.message_id IS NULL
+                        OR m.created_at > last_read.created_at
+                        OR (m.created_at = last_read.created_at AND m.message_id > last_read.message_id)
+                      )
+                """
             params.append(limit)
             rows = conn.execute(
                 f"""
                 SELECT DISTINCT
                     m.message_id
                 FROM messages m
+                LEFT JOIN mailbox_thread_reads reads
+                    ON reads.mailbox_id = ?
+                   AND reads.thread_id = m.thread_id
+                LEFT JOIN messages last_read
+                    ON last_read.message_id = reads.last_read_message_id
                 WHERE (
                         m.from_mailbox_id = ?
                         OR EXISTS (
@@ -2678,6 +2694,7 @@ class SQLiteMailbox:
                       )
                   {message_type_filter}
                   {since_filter}
+                  {unread_filter}
                 ORDER BY m.created_at DESC, m.message_id DESC
                 LIMIT ?
                 """,

@@ -58,6 +58,19 @@ def _env_flag(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_query_bool(value: str | None, *, field_name: str) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid boolean query parameter: {field_name}")
+
+
 _UNSET_HTTP = object()
 
 
@@ -831,6 +844,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             limit = int(limit_text)
             message_type = (query.get("message_type") or [None])[0]
             since = (query.get("since") or [None])[0]
+            unread_only = _parse_query_bool((query.get("unread_only") or [None])[0], field_name="unread_only")
             mailbox = self._resolve_thread_state_mailbox(
                 requested_address,
                 auth,
@@ -844,6 +858,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 limit=limit,
                 message_type=message_type,
                 since=since,
+                unread_only=unread_only,
             )
             return 200, self._with_caller({"ok": True, "messages": messages}, auth)
 

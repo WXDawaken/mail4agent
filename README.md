@@ -209,6 +209,12 @@ Filter that inbox view to messages created at or after a specific ISO timestamp:
 python .\client.py inbox --limit 10 --since 2026-03-24T16:02:19.605Z
 ```
 
+Show only messages that are still unread for the current mailbox session:
+
+```powershell
+python .\client.py inbox --limit 10 --unread-only
+```
+
 List thread summaries for the current session inbox:
 
 ```powershell

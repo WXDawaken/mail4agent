@@ -140,6 +140,79 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
         self.assertEqual(invalid.get("ok"), False)
         self.assertIn("Invalid isoformat string", str(invalid.get("error")))
 
+    def test_http_inbox_route_can_filter_unread_only_before_and_after_mark_read(self) -> None:
+        reviewer_session = login_role_session(
+            self.base_url,
+            self.tokens["codex"],
+            role="reviewer",
+            consumer_id="python-inbox-http-unread",
+            session_name="dogfood-inbox-http-unread",
+        )
+        session_token = auth_token_for_client(reviewer_session)
+
+        first = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-unread", "step": 1},
+            subject="inbox http unread first",
+            message_type="codex.inbox.unread",
+        )
+        self.pause_for_ordering()
+        second = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-unread", "step": 2},
+            subject="inbox http unread second",
+            message_type="codex.inbox.unread",
+            thread_id=str(first["thread_id"]),
+            in_reply_to_message_id=str(first["message_id"]),
+        )
+
+        unread = request_json(
+            self.base_url,
+            "GET",
+            "/inbox",
+            token=session_token,
+            query={"limit": 10, "unread_only": "true"},
+        )
+        unread_items = inbox_items(unread)
+        self.assertEqual(message_ids_from_items(unread_items), [str(second["message_id"]), str(first["message_id"])])
+
+        marked = request_json(
+            self.base_url,
+            "POST",
+            "/mark-thread-read",
+            token=session_token,
+            body={"thread_id": str(first["thread_id"])},
+        )
+        self.assertEqual(marked.get("ok"), True)
+
+        after_mark = request_json(
+            self.base_url,
+            "GET",
+            "/inbox",
+            token=session_token,
+            query={"limit": 10, "unread_only": "1"},
+        )
+        self.assertEqual(inbox_items(after_mark), [])
+
+        reopened = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-unread", "step": 3},
+            subject="inbox http unread third",
+            message_type="codex.inbox.unread",
+            thread_id=str(first["thread_id"]),
+            in_reply_to_message_id=str(second["message_id"]),
+        )
+
+        after_reopen = request_json(
+            self.base_url,
+            "GET",
+            "/inbox",
+            token=session_token,
+            query={"limit": 10, "unread_only": "yes"},
+        )
+        reopened_items = inbox_items(after_reopen)
+        self.assertEqual(message_ids_from_items(reopened_items), [str(reopened["message_id"])])
+
     def test_cli_inbox_command_infers_session_default_inbox(self) -> None:
         reviewer_session = login_role_session(
             self.base_url,
@@ -169,6 +242,8 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             payload={"task": "inbox-cli", "step": 3},
             subject="inbox cli newer",
             message_type="codex.inbox.cli.keep",
+            thread_id=str(older["thread_id"]),
+            in_reply_to_message_id=str(older["message_id"]),
         )
 
         env = self.base_env()
@@ -214,6 +289,37 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
         self.assertEqual(message_ids_from_items(visible), [str(newer["message_id"])])
         self.assertNotIn(str(older["message_id"]), message_ids_from_items(visible))
         self.assertNotIn(str(ignored["message_id"]), message_ids_from_items(visible))
+
+        unread = run_client_json(
+            env,
+            "inbox",
+            "--limit",
+            "10",
+            "--message-type",
+            "codex.inbox.cli.keep",
+            "--unread-only",
+        )
+        unread_items = inbox_items(unread)
+        self.assertEqual(message_ids_from_items(unread_items), [str(newer["message_id"]), str(older["message_id"])])
+
+        marked = run_client_json(
+            env,
+            "mark-thread-read",
+            "--thread-id",
+            str(newer["thread_id"]),
+        )
+        self.assertEqual(marked.get("ok"), True)
+
+        after_mark = run_client_json(
+            env,
+            "inbox",
+            "--limit",
+            "10",
+            "--message-type",
+            "codex.inbox.cli.keep",
+            "--unread-only",
+        )
+        self.assertEqual(inbox_items(after_mark), [])
 
 
 if __name__ == "__main__":

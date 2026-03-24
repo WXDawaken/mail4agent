@@ -302,6 +302,7 @@ class MailboxHTTPClient:
         limit: int = 20,
         message_type: str | None = None,
         since: str | None = None,
+        unread_only: bool = False,
     ) -> dict[str, Any]:
         if limit < 0:
             raise ValueError("limit must be >= 0")
@@ -317,6 +318,8 @@ class MailboxHTTPClient:
             query["message_type"] = message_type
         if since is not None:
             query["since"] = since
+        if unread_only:
+            query["unread_only"] = "true"
         return self._request_json(
             "GET",
             "/inbox",
