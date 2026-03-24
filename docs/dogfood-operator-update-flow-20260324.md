@@ -10,6 +10,8 @@
 - Repo: `E:\agent_misc\mail4agent`
 - Bootstrap entrypoint: [dogfood_smoke_bootstrap.py](/E:/agent_misc/mail4agent/dogfood_smoke_bootstrap.py)
 - Generic launcher: [launch_dogfood_agent.ps1](/E:/agent_misc/mail4agent/launch_dogfood_agent.ps1)
+- Oncall supervisor: [mailbox_oncall.py](/E:/agent_misc/mail4agent/mailbox_oncall.py)
+- Oncall launcher: [launch_dogfood_oncall_agent.ps1](/E:/agent_misc/mail4agent/launch_dogfood_oncall_agent.ps1)
 - Operator prompt: [dogfood-high-operator-prompt.txt](/E:/agent_misc/mail4agent/docs/dogfood-high-operator-prompt.txt)
 
 ## Runtime Assets
@@ -61,6 +63,16 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 operator
 ```
 
 The legacy [launch_dogfood_medium_agent.ps1](/E:/agent_misc/mail4agent/launch_dogfood_medium_agent.ps1) remains as a compatibility wrapper, but the generic launcher is now the preferred entry point.
+
+## Oncall Follow-Up
+
+For supervisor-driven operator work, use the separate oncall entrypoint:
+
+```powershell
+python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood
+```
+
+That path uses the existing mailbox `claim/heartbeat/ack/nack` loop underneath, but keeps the role-aware orchestration outside `client.py`.
 
 ## Recommended Operator Task Shape
 

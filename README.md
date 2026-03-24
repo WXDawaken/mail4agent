@@ -10,7 +10,7 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 - Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
 - Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume
-- Includes repo-local dogfood helpers for medium planner/reviewer runs and a high-effort operator run
+- Includes repo-local dogfood helpers for medium planner/reviewer runs, a high-effort operator run, and a minimal operator oncall supervisor
 - Stays dependency-free: Python standard library only
 
 ## Main Files
@@ -277,6 +277,20 @@ Reply and ack:
 python .\client.py claim |
 python .\client.py reply --payload-json '{"ok":true,"reply":"done"}' --ack-after
 ```
+
+Run the generic consume worker once:
+
+```powershell
+python .\client.py consume --once -- python -c "import json,sys; print(json.load(sys.stdin)['message_id'])"
+```
+
+Run the minimal operator oncall supervisor once against the repo-local dogfood runtime:
+
+```powershell
+python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood
+```
+
+Use `--watch` if you want the supervisor to keep polling for more work instead of exiting after one attempt.
 
 Bash equivalent:
 

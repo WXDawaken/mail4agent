@@ -19,6 +19,8 @@
 - The canonical repo now also includes session-scoped `default_inbox_address` handling for thread-state surfaces, so logged-in planner/reviewer runs no longer need explicit `--to-address` recovery on `thread-summaries` and `mark-thread-read`.
 - The current shared benchmark evidence now supports a `Python-first, Rust-selective` language split rather than a full Rust rewrite.
 - The canonical repo now also has a bounded dogfood smoke/update profile for real Codex-agent mailbox trials: medium planner/reviewer plus a high-effort operator path for bounded repo-local updates.
+- The canonical repo now also has a first oncall direction: keep `client.py consume` as the generic worker primitive, but move role-aware mailbox supervision into a separate script instead of growing the main CLI indefinitely.
+- That first oncall direction is now implemented for `operator`: `mailbox_oncall.py` supervises one claimed delivery at a time, while `launch_dogfood_oncall_agent.ps1` stages runtime assets into a repo-local sandbox-visible directory before launching Codex.
 
 ## Milestones
 
@@ -28,6 +30,7 @@
 - Keep auth/session lifecycle observable enough for bounded maintenance drills and re-login recovery.
 - Use Rust selectively for bounded backend slices once Python behavior is stabilized.
 - Keep a lightweight repo-local dogfood smoke path so real mailbox usage can be exercised outside the benchmark harness.
+- Keep a lightweight repo-local oncall path so claimed mailbox work can be supervised without a permanently blocked interactive Codex session.
 
 ## Risks
 
@@ -61,6 +64,7 @@
 - Dogfood baseline note: `E:\agent_misc\docs\mail4agent-dogfood-baseline-20260324.md`
 - Dogfood smoke runbook: `E:\agent_misc\mail4agent\docs\dogfood-medium-smoke-20260324.md`
 - Dogfood operator update flow: `E:\agent_misc\mail4agent\docs\dogfood-operator-update-flow-20260324.md`
+- Dogfood operator oncall flow: `E:\agent_misc\mail4agent\docs\dogfood-operator-oncall-20260325.md`
 - Dogfood maintenance scenario: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-scenario-20260324.md`
 - Dogfood maintenance drill playbook: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-drill-20260324.md`
 - First maintenance continuity report: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-report-20260324.md`

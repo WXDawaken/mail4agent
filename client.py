@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from codex_mailbox_client import DEFAULT_MAILBOX_BASE_URL, MailboxClientConfig, MailboxHTTPClient, MailboxHTTPError
+from mailbox_worker import ConsumeConfig, run_consume_loop, run_subprocess_handler
 
 
 def main() -> None:
@@ -489,141 +490,31 @@ def _run_consume(client: MailboxHTTPClient, args: argparse.Namespace) -> dict[st
     if args.max_deliveries is not None and args.max_deliveries <= 0:
         raise ValueError("max-deliveries must be greater than zero")
 
-    processed = 0
-    acked = 0
-    nacked = 0
-    empty_polls = 0
-    last_delivery_id: int | None = None
-
-    while True:
-        to_addresses = _split_csv(args.to_addresses)
-        delivery = client.claim(
-            to_address=args.to_address,
-            to_addresses=to_addresses if to_addresses else None,
-            consumer_id=args.consumer_id or _default_consumer_id(),
-            lease_seconds=args.lease_seconds,
-        )
-        if delivery is None:
-            empty_polls += 1
-            if args.once:
-                break
-            if args.max_deliveries is not None and processed >= args.max_deliveries:
-                break
-            time.sleep(max(0.0, args.poll_interval_seconds))
-            continue
-
-        processed += 1
-        last_delivery_id = int(delivery["delivery_id"])
-        return_code = _run_consume_handler(client, delivery, handler_command, args, heartbeat_interval_seconds)
-        if return_code in ack_exit_codes:
-            ok = client.ack(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                actor=args.consumer_id or _default_consumer_id(),
-            )
-            if not ok:
-                raise RuntimeError(f"ack rejected for delivery {delivery['delivery_id']}")
-            acked += 1
-        else:
-            ok = client.nack(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                retry_after_seconds=args.retry_after_seconds,
-                last_error=f"handler exited with status {return_code}",
-                actor=args.consumer_id or _default_consumer_id(),
-            )
-            if not ok:
-                raise RuntimeError(f"nack rejected for delivery {delivery['delivery_id']}")
-            nacked += 1
-
-        if args.once:
-            break
-        if args.max_deliveries is not None and processed >= args.max_deliveries:
-            break
-
-    return {
-        "ok": True,
-        "processed": processed,
-        "acked": acked,
-        "nacked": nacked,
-        "empty_polls": empty_polls,
-        "last_delivery_id": last_delivery_id,
-        "handler_command": handler_command,
-        "heartbeat_interval_seconds": heartbeat_interval_seconds,
-    }
-
-
-def _run_consume_handler(
-    client: MailboxHTTPClient,
-    delivery: dict[str, Any],
-    handler_command: list[str],
-    args: argparse.Namespace,
-    heartbeat_interval_seconds: float,
-) -> int:
-    stop_event = threading.Event()
-    heartbeat_errors: list[BaseException] = []
-    heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop,
-        args=(
-            client,
-            delivery,
-            stop_event,
-            heartbeat_errors,
-            heartbeat_interval_seconds,
-            int(args.lease_seconds),
-        ),
-        daemon=True,
+    consumer_id = args.consumer_id or _default_consumer_id()
+    config = ConsumeConfig(
+        to_address=args.to_address,
+        to_addresses=tuple(_split_csv(args.to_addresses)),
+        consumer_id=consumer_id,
+        lease_seconds=int(args.lease_seconds),
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        poll_interval_seconds=float(args.poll_interval_seconds),
+        retry_after_seconds=int(args.retry_after_seconds),
+        ack_exit_codes=frozenset(ack_exit_codes),
+        once=bool(args.once),
+        max_deliveries=args.max_deliveries,
     )
-    heartbeat_thread.start()
-    try:
-        completed = subprocess.run(
+
+    payload = run_consume_loop(
+        client,
+        config,
+        lambda delivery: run_subprocess_handler(
+            delivery,
             handler_command,
-            input=json.dumps(delivery, ensure_ascii=False),
-            text=True,
-            env=_build_handler_env(delivery),
             cwd=str(Path.cwd()),
-            check=False,
-        )
-        return int(completed.returncode)
-    finally:
-        stop_event.set()
-        heartbeat_thread.join(timeout=max(1.0, heartbeat_interval_seconds + 1.0))
-        if heartbeat_errors:
-            raise RuntimeError(f"heartbeat failed during consume: {heartbeat_errors[0]}")
-
-
-def _heartbeat_loop(
-    client: MailboxHTTPClient,
-    delivery: dict[str, Any],
-    stop_event: threading.Event,
-    heartbeat_errors: list[BaseException],
-    heartbeat_interval_seconds: float,
-    lease_seconds: int,
-) -> None:
-    while not stop_event.wait(heartbeat_interval_seconds):
-        try:
-            ok = client.heartbeat(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                lease_seconds=lease_seconds,
-            )
-            if not ok:
-                heartbeat_errors.append(RuntimeError("heartbeat rejected by mailbox server"))
-                return
-        except Exception as exc:
-            heartbeat_errors.append(exc)
-            return
-
-
-def _build_handler_env(delivery: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
-    env["MAILBOX_DELIVERY_ID"] = str(delivery.get("delivery_id") or "")
-    env["MAILBOX_MESSAGE_ID"] = str(delivery.get("message_id") or "")
-    env["MAILBOX_THREAD_ID"] = str(delivery.get("thread_id") or "")
-    env["MAILBOX_CLAIM_TOKEN"] = str(delivery.get("claim_token") or "")
-    env["MAILBOX_FROM_ADDRESS"] = str(delivery.get("from") or "")
-    env["MAILBOX_TO_ADDRESS"] = str(delivery.get("to") or "")
-    return env
+        ),
+    )
+    payload["handler_command"] = handler_command
+    return payload
 
 
 def _resolve_base_url(explicit_base_url: str | None, *, auth_input: dict[str, Any] | None = None) -> str:

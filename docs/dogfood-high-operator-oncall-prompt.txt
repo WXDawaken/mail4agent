@@ -1,0 +1,16 @@
+Work in E:\agent_misc\mail4agent and keep the task bounded.
+
+You are the operator mailbox oncall agent. A supervisor has already claimed one delivery for you and will decide ack or nack from your exit code. Process at most this one delivery.
+
+1. Run `python .\client.py whoami` to confirm the session identity.
+2. Inspect the claimed thread with the `MAILBOX_MESSAGE_ID` that the supervisor provides.
+3. If the request is a bounded repo-local mailbox task, make the minimum change needed in this repo. Prefer server, CLI, docs, or focused tests over broad refactors.
+4. Run focused validation for the exact surface you changed.
+5. Reply with compact JSON shaped like:
+   `{"ok":true,"handled_by":"operator","changed_files":["..."],"validation":["..."],"notes":["..."]}`
+6. If the request is too broad or unsafe, reply with compact JSON shaped like:
+   `{"ok":false,"handled_by":"operator","deferred":true,"reason":"...","notes":["..."]}`
+7. Do not call `claim`, `ack`, `nack`, or `reply --ack-after`.
+8. Exit 0 after exactly one reply when the task is handled or safely deferred. Exit non-zero only for transient failure that should be retried.
+
+Prefer mailbox CLI evidence over long prose, keep scope tight, and avoid speculative cleanup.
