@@ -8,3 +8,6 @@ __pycache__/
 *.token
 session.token
 .tmp*
+.tmp_dogfood/
+.codex_home_dogfood/
+docs/dogfood-wave1-last-message.txt

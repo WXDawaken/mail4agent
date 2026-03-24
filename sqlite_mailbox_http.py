@@ -12,6 +12,7 @@ Auth model:
       The token may be either:
         * a harness token for harness-wide access
         * an agent session token issued by `POST /login`
+        * the configured admin token for direct operator mailbox access
     - `POST /login` always requires a harness token and returns a short-lived agent session token.
       Clients pass semantic identity such as `project_id`, `role`/`roles`, and `session`;
       the server derives the concrete mailbox addresses and the session's allowed address set.
@@ -31,12 +32,19 @@ import json
 import os
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from sqlite_mailbox import SQLiteMailbox, canonicalize_address
+from sqlite_mailbox import (
+    SQLiteMailbox,
+    canonicalize_address,
+    normalize_address_component,
+    parse_utc_timestamp,
+    split_address,
+)
 
 
 _ASSET_DIR = Path(__file__).resolve().parent
@@ -60,11 +68,15 @@ class AuthContext:
     agent_session_id: int | None = None
     project_id: str | None = None
     session_name: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    last_used_at: str | None = None
     allowed_addresses: tuple[str, ...] = ()
     send_as_addresses: tuple[str, ...] = ()
     claim_addresses: tuple[str, ...] = ()
     default_from_address: str | None = None
     default_claim_addresses: tuple[str, ...] = ()
+    default_inbox_address: str | None = None
     bootstrap_admin: bool = False
 
 
@@ -220,17 +232,34 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             agent_session_id=int(principal["agent_session_id"]),
             project_id=principal.get("project_id"),
             session_name=principal.get("session_name"),
+            created_at=principal.get("created_at"),
+            expires_at=principal.get("expires_at"),
+            last_used_at=principal.get("last_used_at"),
             allowed_addresses=tuple(str(item) for item in principal.get("allowed_addresses", [])),
             send_as_addresses=tuple(str(item) for item in principal.get("send_as_addresses", [])),
             claim_addresses=tuple(str(item) for item in principal.get("claim_addresses", [])),
             default_from_address=principal.get("default_from_address"),
             default_claim_addresses=tuple(str(item) for item in principal.get("default_claim_addresses", [])),
+            default_inbox_address=principal.get("default_inbox_address"),
         )
+
+    def _session_expiry_seconds(self, expires_at: str | None) -> int | None:
+        if not expires_at:
+            return None
+        try:
+            expires_at_dt = parse_utc_timestamp(expires_at)
+        except ValueError:
+            return None
+        now = datetime.now(timezone.utc)
+        remaining_seconds = int((expires_at_dt - now).total_seconds())
+        return max(0, remaining_seconds)
 
     def _require_mailbox_auth(self) -> AuthContext:
         token = self._extract_bearer_token("X-Mailbox-Token")
         if not token:
             raise AuthenticationError("missing mailbox token")
+        if self.admin_token and hmac.compare_digest(token, self.admin_token):
+            return AuthContext(kind="admin")
         principal = self.mailbox.authenticate_mailbox_principal(token)
         if not principal:
             raise AuthenticationError("invalid mailbox token")
@@ -268,21 +297,27 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
         }
 
     def _with_caller(self, payload: dict[str, Any], auth: AuthContext | None) -> dict[str, Any]:
-        if auth and auth.harness_id:
-            enriched = {
-                **payload,
-                "caller_harness_id": auth.harness_id,
-                "auth_kind": auth.kind,
-            }
-            if auth.kind == "agent_session" and auth.agent_session_id is not None:
-                enriched["agent_session_id"] = auth.agent_session_id
+        if not auth:
+            return payload
+        enriched = {
+            **payload,
+            "auth_kind": auth.kind,
+        }
+        if auth.kind == "admin":
+            enriched["admin"] = True
             return enriched
-        return payload
+        if auth.harness_id:
+            enriched["caller_harness_id"] = auth.harness_id
+        if auth.kind == "agent_session" and auth.agent_session_id is not None:
+            enriched["agent_session_id"] = auth.agent_session_id
+        return enriched
 
     def _authorize_delivery(self, delivery_id: int, auth: AuthContext) -> dict[str, Any] | None:
         context = self.mailbox.get_delivery_context(delivery_id)
         if not context:
             return None
+        if auth.kind == "admin":
+            return context
         if auth.kind == "agent_session":
             if context["to_address"] not in auth.claim_addresses:
                 raise PermissionError(
@@ -304,6 +339,10 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
 
     def _effective_from_address(self, body: dict[str, Any], auth: AuthContext) -> str:
         requested_from = _optional(body, "from_address", str)
+        if auth.kind == "admin":
+            if requested_from is None:
+                raise ValueError("missing required field: from_address")
+            return self.mailbox.resolve_address(requested_from).address
         if auth.kind == "agent_session":
             if requested_from is None:
                 if not auth.default_from_address:
@@ -349,11 +388,86 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                     raise PermissionError(f"to_address {address} is not claimable by the current agent session")
             return normalized_many
 
+        if auth.kind == "admin":
+            if not normalized_many:
+                raise ValueError("missing required field: to_address")
+            for address in normalized_many:
+                self.mailbox.resolve_address(address)
+            return normalized_many
+
         if not normalized_many:
             raise ValueError("missing required field: to_address")
         for address in normalized_many:
             self.mailbox.resolve_address_for_harness(address, auth.harness_id or "")
         return normalized_many
+
+    def _resolve_thread_state_mailbox(
+        self,
+        requested_address: str | None,
+        auth: AuthContext,
+        *,
+        missing_error: str,
+    ) -> Any | None:
+        resolved_address = requested_address
+        if not resolved_address:
+            if auth.kind == "agent_session" and auth.default_inbox_address:
+                resolved_address = auth.default_inbox_address
+            elif auth.kind == "agent_session":
+                raise ValueError("to_address is required because this agent session has no default_inbox_address")
+            else:
+                raise ValueError(missing_error)
+
+        canonical = canonicalize_address(resolved_address)
+        if auth.kind == "admin":
+            return self.mailbox.resolve_address(canonical)
+        if auth.kind == "agent_session":
+            if canonical not in set(auth.allowed_addresses):
+                raise PermissionError(
+                    f"address {canonical} is not available in the current agent session for thread summaries"
+                )
+            return self.mailbox.resolve_address(canonical)
+
+        caller_harness_id = auth.harness_id or ""
+        _, _, address_harness_id = split_address(canonical)
+        if address_harness_id != caller_harness_id:
+            return None
+        return self.mailbox.resolve_address_for_harness(canonical, caller_harness_id)
+
+    def _retry_queue_query(self, query: dict[str, list[str]], auth: AuthContext) -> tuple[str | None, str | None, int]:
+        query_to_address = (query.get("to_address") or [None])[0]
+        query_project_id = (query.get("project_id") or [None])[0]
+        query_limit = (query.get("limit") or [None])[0]
+
+        if query_limit in {None, ""}:
+            limit = 50
+        else:
+            try:
+                limit = int(query_limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("query parameter limit must be an integer") from exc
+        if limit <= 0:
+            raise ValueError("query parameter limit must be greater than zero")
+
+        normalized_to_address: str | None = None
+        if query_to_address:
+            if auth.kind == "admin":
+                normalized_to_address = self.mailbox.resolve_address(query_to_address).address
+            elif auth.kind == "agent_session":
+                normalized_to_address = canonicalize_address(query_to_address)
+                if normalized_to_address not in set(auth.claim_addresses):
+                    raise PermissionError(
+                        f"to_address {normalized_to_address} is not visible to the current agent session"
+                    )
+            else:
+                normalized_to_address = self.mailbox.resolve_address_for_harness(
+                    query_to_address,
+                    auth.harness_id or "",
+                ).address
+
+        normalized_project_id = (
+            normalize_address_component(query_project_id, "project_id") if query_project_id else None
+        )
+        return normalized_to_address, normalized_project_id, limit
 
     def _dispatch_admin(
         self, method: str, path: str, body: dict[str, Any], query: dict[str, list[str]]
@@ -522,6 +636,8 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/whoami":
             auth = self._require_mailbox_auth()
             caller_harness_id = auth.harness_id or ""
+            if auth.kind == "admin":
+                return 200, self._with_caller({"ok": True}, auth)
             if auth.kind == "agent_session":
                 return 200, self._with_caller(
                     {
@@ -530,11 +646,16 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                             "agent_session_id": auth.agent_session_id,
                             "project_id": auth.project_id,
                             "session_name": auth.session_name,
+                            "created_at": auth.created_at,
+                            "expires_at": auth.expires_at,
+                            "expires_in_seconds": self._session_expiry_seconds(auth.expires_at),
+                            "last_used_at": auth.last_used_at,
                             "allowed_addresses": list(auth.allowed_addresses),
                             "send_as_addresses": list(auth.send_as_addresses),
                             "claim_addresses": list(auth.claim_addresses),
                             "default_from_address": auth.default_from_address,
                             "default_claim_addresses": list(auth.default_claim_addresses),
+                            "default_inbox_address": auth.default_inbox_address,
                         },
                     },
                     auth,
@@ -555,6 +676,25 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                         }
                         for mailbox in mailboxes
                     ],
+                },
+                auth,
+            )
+
+        if method == "POST" and path == "/logout":
+            token = self._extract_bearer_token("X-Mailbox-Token")
+            if not token:
+                raise AuthenticationError("missing mailbox token")
+            auth = self._require_mailbox_auth()
+            if auth.kind != "agent_session":
+                raise PermissionError("logout is only supported for agent session tokens")
+            session = self.mailbox.invalidate_agent_session_token(token)
+            if session is None:
+                raise AuthenticationError("invalid or expired agent session token")
+            return 200, self._with_caller(
+                {
+                    "ok": True,
+                    "logged_out": True,
+                    "session": session,
                 },
                 auth,
             )
@@ -587,16 +727,42 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
         auth = self._require_mailbox_auth()
         caller_harness_id = auth.harness_id or ""
 
+        if method == "GET" and path == "/retry-queue":
+            to_address, project_id, limit = self._retry_queue_query(query, auth)
+            if auth.kind == "admin":
+                deliveries = self.mailbox.list_retry_queue(
+                    to_address=to_address,
+                    project_id=project_id,
+                    limit=limit,
+                )
+            elif auth.kind == "agent_session":
+                deliveries = self.mailbox.list_retry_queue_for_addresses(
+                    addresses=list(auth.claim_addresses),
+                    to_address=to_address,
+                    project_id=project_id,
+                    limit=limit,
+                )
+            else:
+                deliveries = self.mailbox.list_retry_queue_for_harness(
+                    harness_id=caller_harness_id,
+                    to_address=to_address,
+                    project_id=project_id,
+                    limit=limit,
+                )
+            return 200, self._with_caller({"ok": True, "deliveries": deliveries}, auth)
+
         if method == "GET" and path == "/message":
             message_id = (query.get("message_id") or [None])[0]
             if not message_id:
                 raise ValueError("missing query parameter: message_id")
-            if auth.kind == "agent_session":
+            if auth.kind == "admin":
+                message = self.mailbox.get_message(message_id)
+            elif auth.kind == "agent_session":
                 message = self.mailbox.get_message_for_addresses(message_id, list(auth.allowed_addresses))
             else:
                 message = self.mailbox.get_message_for_harness(message_id, caller_harness_id)
             if not message:
-                if self.mailbox.get_message(message_id):
+                if auth.kind != "admin" and self.mailbox.get_message(message_id):
                     visibility = "current agent session" if auth.kind == "agent_session" else f"caller harness {caller_harness_id}"
                     raise PermissionError(f"message {message_id} is not visible to {visibility}")
                 return 404, {"ok": False, "error": "message not found"}
@@ -607,7 +773,12 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             query_message_id = (query.get("message_id") or [None])[0]
             if not query_thread_id and not query_message_id:
                 raise ValueError("missing query parameter: thread_id or message_id")
-            if auth.kind == "agent_session":
+            if auth.kind == "admin":
+                thread = self.mailbox.get_thread(
+                    thread_id=query_thread_id,
+                    message_id=query_message_id,
+                )
+            elif auth.kind == "agent_session":
                 thread = self.mailbox.get_thread_for_addresses(
                     thread_id=query_thread_id,
                     message_id=query_message_id,
@@ -620,6 +791,8 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                     harness_id=caller_harness_id,
                 )
             if not thread:
+                if auth.kind == "admin":
+                    return 404, {"ok": False, "error": "thread not found"}
                 existing_thread_id = query_thread_id
                 if existing_thread_id is None and query_message_id:
                     existing_message = self.mailbox.get_message(query_message_id)
@@ -633,9 +806,28 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 return 404, {"ok": False, "error": "thread not found"}
             return 200, self._with_caller({"ok": True, "thread": thread}, auth)
 
+        if method == "GET" and path == "/thread-summaries":
+            requested_address = (query.get("to_address") or [None])[0]
+            limit_text = (query.get("limit") or ["20"])[0]
+            limit = int(limit_text)
+            mailbox = self._resolve_thread_state_mailbox(
+                requested_address,
+                auth,
+                missing_error="missing query parameter: to_address",
+            )
+            if mailbox is None:
+                return 200, self._with_caller({"ok": True, "threads": []}, auth)
+            threads = self.mailbox.get_thread_summaries_for_mailbox(
+                to_address=mailbox.address,
+                limit=limit,
+            )
+            return 200, self._with_caller({"ok": True, "threads": threads}, auth)
+
         if method == "POST" and path == "/resolve":
             requested_address = _require(body, "address", str)
-            if auth.kind == "agent_session":
+            if auth.kind == "admin":
+                mailbox = self.mailbox.resolve_address(requested_address)
+            elif auth.kind == "agent_session":
                 canonical = self._normalize_session_address(requested_address, auth, purpose="resolve")
                 mailbox = self.mailbox.resolve_address(canonical)
             else:
@@ -653,7 +845,9 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             from_address = self._effective_from_address(body, auth)
             reply_to_address = _optional(body, "reply_to_address", str)
             if reply_to_address is not None:
-                if auth.kind == "agent_session":
+                if auth.kind == "admin":
+                    reply_to_address = self.mailbox.resolve_address(reply_to_address).address
+                elif auth.kind == "agent_session":
                     self._normalize_session_address(reply_to_address, auth, purpose="reply_to")
                 else:
                     self.mailbox.resolve_address_for_harness(reply_to_address, caller_harness_id)
@@ -675,6 +869,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 deliver_after_seconds=int(body.get("deliver_after_seconds", 0)),
                 expires_in_seconds=_optional_int(body, "expires_in_seconds"),
                 max_attempts=int(body.get("max_attempts", 8)),
+                bypass_routing=auth.kind == "admin",
             )
             return 200, self._with_caller({"ok": True, **result}, auth)
 
@@ -715,6 +910,21 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 delivery_id=delivery_id,
                 claim_token=_require(body, "claim_token", str),
                 lease_seconds=int(body.get("lease_seconds", 60)),
+            )
+            return 200, self._with_caller({"ok": ok}, auth)
+
+        if method == "POST" and path == "/mark-thread-read":
+            mailbox = self._resolve_thread_state_mailbox(
+                _optional(body, "to_address", str),
+                auth,
+                missing_error="missing required field: to_address",
+            )
+            if mailbox is None:
+                return 200, self._with_caller({"ok": False}, auth)
+            ok = self.mailbox.mark_thread_read(
+                thread_id=_require(body, "thread_id", str),
+                to_address=mailbox.address,
+                actor=_optional(body, "actor", str) or caller_harness_id or mailbox.address,
             )
             return 200, self._with_caller({"ok": ok}, auth)
 

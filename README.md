@@ -5,10 +5,11 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 ## What It Does
 
 - Stores harnesses, projects, mailboxes, messages, deliveries, and routing in SQLite
-- Exposes HTTP endpoints for `send`, `claim`, `ack`, `nack`, `heartbeat`, `resolve`, `message`, and `thread`
+- Exposes HTTP endpoints for `send`, `claim`, `ack`, `nack`, `heartbeat`, `retry-queue`, `resolve`, `message`, `thread`, `thread-summaries`, and `mark-thread-read`
 - Protects admin routes with either an env admin token or admin username/password
+- Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
-- Includes a browser admin page and a `client.py` CLI for login/send/claim/thread/reply/consume
+- Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/thread-summaries/mark-thread-read/reply/consume
 - Stays dependency-free: Python standard library only
 
 ## Main Files
@@ -81,12 +82,15 @@ python3 ./sqlite_mailbox_http.py --db ./mailbox.sqlite --host 127.0.0.1 --port 8
 
 ## Auth Model
 
-- `MAILBOX_ADMIN_TOKEN` protects `/admin/*` if you want a static admin bearer token
+- `MAILBOX_ADMIN_TOKEN` protects `/admin/*` and can also drive the ordinary mailbox routes directly
 - Harness tokens are long-lived and stored hashed in SQLite
 - `POST /login` exchanges a harness token for an agent session token
+- `POST /logout` invalidates the current agent session token immediately
 - Agent session tokens are stored in server memory only
 - Repeating the same login identity reuses the same in-memory session token until it expires
 - Restarting the server invalidates all agent session tokens
+- `GET /whoami` exposes session expiry metadata such as `expires_at` and `expires_in_seconds`
+- `GET /whoami` for agent sessions also exposes `default_inbox_address`, which thread-state commands can use when `--to-address` is omitted
 
 ## CLI Usage
 
@@ -101,6 +105,13 @@ $env:MAILBOX_SESSION_TOKEN = (
     --roles planner,reviewer `
     --session main
 )
+```
+
+Inspect the current session and explicitly log it out:
+
+```powershell
+python .\client.py whoami
+python .\client.py logout
 ```
 
 Bash equivalent:
@@ -120,7 +131,7 @@ export MAILBOX_SESSION_TOKEN="$(
 Environment variable summary:
 
 - `MAILBOX_BASE_URL`: mailbox server base URL, defaults to `http://127.0.0.1:8787`
-- `MAILBOX_ADMIN_TOKEN`: optional static admin bearer token for `/admin/*`
+- `MAILBOX_ADMIN_TOKEN`: optional static admin bearer token for `/admin/*` and direct operator mailbox commands
 - `MAILBOX_TOKEN`: harness token, mainly used for `client.py login`
 - `MAILBOX_SESSION_TOKEN`: agent session token, preferred for normal mailbox commands after login
 - `MAILBOX_CONFIG`: optional path to `mailbox_client.json`
@@ -173,6 +184,62 @@ Bash equivalent:
 python3 ./client.py --format text thread --message-id <MESSAGE_ID>
 ```
 
+List thread summaries for the current session inbox:
+
+```powershell
+python .\client.py thread-summaries --limit 10
+```
+
+Bash equivalent:
+
+```bash
+python3 ./client.py thread-summaries --limit 10
+```
+
+If you want to target a different mailbox explicitly, `--to-address` still works:
+
+```powershell
+python .\client.py thread-summaries --to-address reviewer@mail4agent.codex --limit 10
+```
+
+Mark a thread read for the current session inbox:
+
+```powershell
+python .\client.py mark-thread-read --thread-id <THREAD_ID>
+```
+
+Bash equivalent:
+
+```bash
+python3 ./client.py mark-thread-read --thread-id <THREAD_ID>
+```
+
+And the explicit mailbox override still works when needed:
+
+```powershell
+python .\client.py mark-thread-read --thread-id <THREAD_ID> --to-address reviewer@mail4agent.codex
+```
+
+Inspect retry-pending deliveries for the current harness or session scope:
+
+```powershell
+python .\client.py retry-queue --project-id mail4agent --limit 10
+```
+
+Bash equivalent:
+
+```bash
+python3 ./client.py retry-queue --project-id mail4agent --limit 10
+```
+
+Run an operator mailbox command directly with the admin token:
+
+```powershell
+$env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
+python .\client.py whoami
+python .\client.py send --admin-token $env:MAILBOX_ADMIN_TOKEN --from-address operator@mail4agent.codex --to-address shadow@mail4agent.ops --payload-json '{"task":"admin-direct"}'
+```
+
 Reply and ack:
 
 ```powershell
@@ -212,9 +279,32 @@ Send a demo task and wait for a reply:
 python .\codex_mailbox_demo_send.py --task-type upper_text --text "hello codex" --wait-for-reply
 ```
 
+## Medium Dogfood Smoke
+
+For a bounded two-agent Codex smoke on top of this mailbox repo:
+
+1. Start the server with a static admin token.
+2. Run `python .\dogfood_smoke_bootstrap.py`.
+3. Send an operator task to `planner@mail4agent.dogfood`.
+4. Launch one medium planner agent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 planner
+```
+
+5. Launch one medium reviewer agent if the planner hands work off:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 reviewer
+```
+
+See [docs/dogfood-medium-smoke-20260324.md](E:\agent_misc\mail4agent\docs\dogfood-medium-smoke-20260324.md) for the full runbook.
+
 ## Notes
 
 - `mailbox.sqlite` and other SQLite database files are intentionally ignored by git
 - CLI output defaults to JSON; pass `--format text` for a more readable terminal view
+- `client.py thread-summaries` now uses the logged-in session's `default_inbox_address` when available, and `client.py mark-thread-read --thread-id <THREAD_ID>` uses that same default; both commands still accept explicit `--to-address <MAILBOX>` overrides
+- `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token

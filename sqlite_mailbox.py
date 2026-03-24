@@ -30,6 +30,10 @@ def utc_after(seconds: int) -> str:
     )
 
 
+def parse_utc_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 
 def canonicalize_address(address: str) -> str:
     match = ADDRESS_RE.match(address.strip())
@@ -77,6 +81,25 @@ def unique_preserving_order(values: list[str]) -> list[str]:
     return result
 
 
+def resolve_default_inbox_address(
+    *,
+    claim_addresses: list[str],
+    default_claim_addresses: list[str],
+    role_claim_addresses: list[str],
+    default_role_claim_addresses: list[str],
+) -> str | None:
+    for candidates in (
+        default_role_claim_addresses,
+        default_claim_addresses,
+        role_claim_addresses,
+        claim_addresses,
+    ):
+        unique_candidates = unique_preserving_order(candidates)
+        if unique_candidates:
+            return unique_candidates[0]
+    return None
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -101,6 +124,18 @@ def verify_password(password: str, encoded_hash: str) -> bool:
 
 
 _UNSET = object()
+RETRY_QUEUE_ERROR_SUMMARY_LIMIT = 120
+
+
+def summarize_retry_error(last_error: str | None, *, limit: int = RETRY_QUEUE_ERROR_SUMMARY_LIMIT) -> str:
+    if not last_error:
+        return ""
+    normalized = " ".join(last_error.split())
+    if len(normalized) <= limit:
+        return normalized
+    if limit <= 3:
+        return normalized[:limit]
+    return f"{normalized[: limit - 3].rstrip()}..."
 
 
 @dataclass(frozen=True)
@@ -362,6 +397,20 @@ ON deliveries(consumer_id, status, lease_until);
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_message
 ON deliveries(message_id);
+
+CREATE TABLE IF NOT EXISTS mailbox_thread_reads (
+    mailbox_thread_read_id    INTEGER PRIMARY KEY,
+    mailbox_id                INTEGER NOT NULL,
+    thread_id                 TEXT NOT NULL,
+    last_read_message_id      TEXT NOT NULL,
+    marked_read_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (mailbox_id) REFERENCES mailboxes(mailbox_id) ON DELETE CASCADE,
+    FOREIGN KEY (last_read_message_id) REFERENCES messages(message_id),
+    UNIQUE(mailbox_id, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mailbox_thread_reads_mailbox
+ON mailbox_thread_reads(mailbox_id, thread_id);
 
 CREATE TABLE IF NOT EXISTS mailbox_events (
     event_id                 INTEGER PRIMARY KEY,
@@ -767,6 +816,7 @@ class SQLiteMailbox:
             """
             SELECT
                 m.address_canonical AS address,
+                m.mailbox_type,
                 m.accept_messages,
                 sm.can_send,
                 sm.can_claim,
@@ -786,10 +836,13 @@ class SQLiteMailbox:
         send_as_addresses: list[str] = []
         claim_addresses: list[str] = []
         default_claim_addresses: list[str] = []
+        role_claim_addresses: list[str] = []
+        default_role_claim_addresses: list[str] = []
         default_from_address: str | None = None
 
         for mailbox_row in mailbox_rows:
             address = str(mailbox_row["address"])
+            mailbox_type = str(mailbox_row["mailbox_type"])
             allowed_addresses.append(address)
             if bool(mailbox_row["can_send"]):
                 send_as_addresses.append(address)
@@ -797,13 +850,23 @@ class SQLiteMailbox:
                     default_from_address = address
             if bool(mailbox_row["can_claim"]) and bool(mailbox_row["accept_messages"]):
                 claim_addresses.append(address)
+                if mailbox_type == "role":
+                    role_claim_addresses.append(address)
                 if bool(mailbox_row["is_default_claim"]):
                     default_claim_addresses.append(address)
+                    if mailbox_type == "role":
+                        default_role_claim_addresses.append(address)
 
         if default_from_address is None and send_as_addresses:
             default_from_address = send_as_addresses[0]
         if not default_claim_addresses and claim_addresses:
             default_claim_addresses = claim_addresses.copy()
+        default_inbox_address = resolve_default_inbox_address(
+            claim_addresses=claim_addresses,
+            default_claim_addresses=default_claim_addresses,
+            role_claim_addresses=role_claim_addresses,
+            default_role_claim_addresses=default_role_claim_addresses,
+        )
 
         return {
             "agent_session_id": row["agent_session_id"],
@@ -817,6 +880,7 @@ class SQLiteMailbox:
             "claim_addresses": unique_preserving_order(claim_addresses),
             "default_from_address": default_from_address,
             "default_claim_addresses": unique_preserving_order(default_claim_addresses),
+            "default_inbox_address": default_inbox_address,
             "created_at": row["created_at"],
             "expires_at": row["expires_at"],
             "last_used_at": row["last_used_at"],
@@ -862,12 +926,16 @@ class SQLiteMailbox:
             if str(record["expires_at"]) <= now
         ]
         for token in expired_tokens:
-            record = self._agent_sessions_by_token.pop(token, None)
-            if not record:
-                continue
-            identity_key = record.get("identity_key")
-            if identity_key is not None and self._agent_session_tokens_by_identity.get(identity_key) == token:
-                del self._agent_session_tokens_by_identity[identity_key]
+            self._remove_agent_session_token_locked(token)
+
+    def _remove_agent_session_token_locked(self, token: str) -> dict[str, Any] | None:
+        record = self._agent_sessions_by_token.pop(token, None)
+        if not record:
+            return None
+        identity_key = record.get("identity_key")
+        if identity_key is not None and self._agent_session_tokens_by_identity.get(identity_key) == token:
+            del self._agent_session_tokens_by_identity[identity_key]
+        return record
 
     def _build_agent_session_payload(
         self,
@@ -881,6 +949,8 @@ class SQLiteMailbox:
         send_as_addresses: list[str] = []
         claim_addresses: list[str] = []
         default_claim_addresses: list[str] = []
+        role_claim_addresses: list[str] = []
+        default_role_claim_addresses: list[str] = []
         default_from_address: str | None = None
 
         for spec in session_request["mailbox_specs"]:
@@ -906,13 +976,23 @@ class SQLiteMailbox:
                     default_from_address = canonical_address
             if bool(spec["can_claim"]) and bool(row["accept_messages"]):
                 claim_addresses.append(canonical_address)
+                if str(spec["mailbox_type"]) == "role":
+                    role_claim_addresses.append(canonical_address)
                 if bool(spec["default_claim"]):
                     default_claim_addresses.append(canonical_address)
+                    if str(spec["mailbox_type"]) == "role":
+                        default_role_claim_addresses.append(canonical_address)
 
         if default_from_address is None and send_as_addresses:
             default_from_address = send_as_addresses[0]
         if not default_claim_addresses and claim_addresses:
             default_claim_addresses = claim_addresses.copy()
+        default_inbox_address = resolve_default_inbox_address(
+            claim_addresses=claim_addresses,
+            default_claim_addresses=default_claim_addresses,
+            role_claim_addresses=role_claim_addresses,
+            default_role_claim_addresses=default_role_claim_addresses,
+        )
 
         session_payload = {
             "agent_session_id": int(record["agent_session_id"]),
@@ -926,6 +1006,7 @@ class SQLiteMailbox:
             "claim_addresses": unique_preserving_order(claim_addresses),
             "default_from_address": default_from_address,
             "default_claim_addresses": unique_preserving_order(default_claim_addresses),
+            "default_inbox_address": default_inbox_address,
             "created_at": record["created_at"],
             "expires_at": record["expires_at"],
             "last_used_at": record["last_used_at"],
@@ -1077,6 +1158,8 @@ class SQLiteMailbox:
             send_as_addresses: list[str] = []
             claim_addresses: list[str] = []
             default_claim_addresses: list[str] = []
+            role_claim_addresses: list[str] = []
+            default_role_claim_addresses: list[str] = []
             default_from_address: str | None = None
             created_mailboxes: list[str] = []
 
@@ -1104,8 +1187,12 @@ class SQLiteMailbox:
                         default_from_address = address
                 if bool(spec["can_claim"]) and effective_accept_messages:
                     claim_addresses.append(address)
+                    if str(effective_mailbox_type) == "role":
+                        role_claim_addresses.append(address)
                     if bool(spec["default_claim"]):
                         default_claim_addresses.append(address)
+                        if str(effective_mailbox_type) == "role":
+                            default_role_claim_addresses.append(address)
                 if not exists:
                     created_mailboxes.append(address)
                 mailboxes.append(
@@ -1125,6 +1212,12 @@ class SQLiteMailbox:
             default_from_address = send_as_addresses[0]
         if not default_claim_addresses and claim_addresses:
             default_claim_addresses = claim_addresses.copy()
+        default_inbox_address = resolve_default_inbox_address(
+            claim_addresses=claim_addresses,
+            default_claim_addresses=default_claim_addresses,
+            role_claim_addresses=role_claim_addresses,
+            default_role_claim_addresses=default_role_claim_addresses,
+        )
 
         return {
             "harness_id": prepared["harness_id"],
@@ -1138,6 +1231,7 @@ class SQLiteMailbox:
             "claim_addresses": unique_preserving_order(claim_addresses),
             "default_from_address": default_from_address,
             "default_claim_addresses": unique_preserving_order(default_claim_addresses),
+            "default_inbox_address": default_inbox_address,
             "created_mailboxes": created_mailboxes,
             "expires_in_seconds": prepared["expires_in_seconds"],
             "metadata": prepared["metadata_payload"],
@@ -1490,6 +1584,30 @@ class SQLiteMailbox:
             with self.connect() as conn:
                 return self._build_agent_session_payload(conn, matched_record)
 
+    def invalidate_agent_session_token(self, token: str) -> dict[str, Any] | None:
+        if not isinstance(token, str):
+            return None
+        token = token.strip()
+        if not token:
+            return None
+        now = utc_now()
+        with self._agent_session_lock:
+            self._cleanup_expired_agent_sessions_locked(now)
+            matched_token: str | None = None
+            matched_record: dict[str, Any] | None = None
+            for candidate_token, candidate_record in self._agent_sessions_by_token.items():
+                if hmac.compare_digest(candidate_token, token):
+                    matched_token = candidate_token
+                    matched_record = candidate_record
+            if matched_token is None or matched_record is None:
+                return None
+            removed_record = self._remove_agent_session_token_locked(matched_token)
+            if removed_record is None:
+                return None
+            removed_record["last_used_at"] = now
+            with self.connect() as conn:
+                return self._build_agent_session_payload(conn, removed_record)
+
     def authenticate_mailbox_principal(self, token: str) -> dict[str, Any] | None:
         session = self.authenticate_agent_session_token(token)
         if session:
@@ -1827,10 +1945,11 @@ class SQLiteMailbox:
         deliver_after_seconds: int = 0,
         expires_in_seconds: Optional[int] = None,
         max_attempts: int = 8,
+        bypass_routing: bool = False,
     ) -> dict[str, Any]:
         src = self.resolve_address(from_address)
         dst = self.resolve_address(to_address)
-        if not self.is_route_allowed(src.address, dst.address):
+        if not bypass_routing and not self.is_route_allowed(src.address, dst.address):
             raise PermissionError(f"route denied: {src.address} -> {dst.address}")
         now = utc_now()
         deliver_after = utc_after(deliver_after_seconds) if deliver_after_seconds > 0 else now
@@ -1844,7 +1963,7 @@ class SQLiteMailbox:
             try:
                 if idempotency_key is not None:
                     existing = conn.execute(
-                        "SELECT message_id FROM messages WHERE from_mailbox_id = ? AND idempotency_key = ?",
+                        "SELECT message_id, thread_id FROM messages WHERE from_mailbox_id = ? AND idempotency_key = ?",
                         (src.mailbox_id, idempotency_key),
                     ).fetchone()
                     if existing:
@@ -1856,6 +1975,7 @@ class SQLiteMailbox:
                         return {
                             "message_id": existing["message_id"],
                             "delivery_id": delivery["delivery_id"] if delivery else None,
+                            "thread_id": existing["thread_id"],
                             "deduplicated": True,
                         }
 
@@ -1907,7 +2027,12 @@ class SQLiteMailbox:
                     details={"from": src.address, "to": dst.address, "subject": subject},
                 )
                 conn.commit()
-                return {"message_id": message_id, "delivery_id": delivery_id, "deduplicated": False}
+                return {
+                    "message_id": message_id,
+                    "delivery_id": delivery_id,
+                    "thread_id": thread_id,
+                    "deduplicated": False,
+                }
             except Exception:
                 conn.rollback()
                 raise
@@ -2356,6 +2481,328 @@ class SQLiteMailbox:
                 "message_count": len(messages),
                 "messages": messages,
             }
+
+    def _load_visible_message_rows_for_mailbox(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mailbox_id: int,
+        thread_id: str | None = None,
+    ) -> list[sqlite3.Row]:
+        params: list[Any] = [mailbox_id, mailbox_id]
+        thread_filter = ""
+        if thread_id is not None:
+            thread_filter = "AND m.thread_id = ?"
+            params.append(thread_id)
+        return conn.execute(
+            f"""
+            SELECT
+                m.thread_id,
+                m.message_id,
+                m.created_at,
+                m.in_reply_to_message_id,
+                src.address_canonical AS from_address
+            FROM messages m
+            JOIN mailboxes src ON src.mailbox_id = m.from_mailbox_id
+            WHERE (
+                    m.from_mailbox_id = ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM deliveries d
+                        WHERE d.message_id = m.message_id
+                          AND d.to_mailbox_id = ?
+                    )
+                  )
+              {thread_filter}
+            ORDER BY m.created_at ASC, m.message_id ASC
+            """,
+            params,
+        ).fetchall()
+
+    def get_thread_summaries_for_mailbox(
+        self,
+        *,
+        to_address: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        mailbox = self.resolve_address(to_address)
+        if limit == 0:
+            return []
+
+        with self.connect() as conn:
+            visible_rows = self._load_visible_message_rows_for_mailbox(conn, mailbox_id=mailbox.mailbox_id)
+            if not visible_rows:
+                return []
+
+            read_rows = conn.execute(
+                """
+                SELECT
+                    r.thread_id,
+                    r.last_read_message_id,
+                    m.created_at AS last_read_message_at
+                FROM mailbox_thread_reads r
+                LEFT JOIN messages m ON m.message_id = r.last_read_message_id
+                WHERE r.mailbox_id = ?
+                """,
+                (mailbox.mailbox_id,),
+            ).fetchall()
+
+            read_state_by_thread: dict[str, tuple[str, str]] = {}
+            for row in read_rows:
+                last_read_message_id = row["last_read_message_id"]
+                last_read_message_at = row["last_read_message_at"]
+                if last_read_message_id is None or last_read_message_at is None:
+                    continue
+                read_state_by_thread[str(row["thread_id"])] = (
+                    str(last_read_message_at),
+                    str(last_read_message_id),
+                )
+
+            summaries_by_thread: dict[str, dict[str, Any]] = {}
+            for row in visible_rows:
+                thread_key = str(row["thread_id"])
+                latest_key = (str(row["created_at"]), str(row["message_id"]))
+                summary = summaries_by_thread.get(thread_key)
+                if summary is None:
+                    summary = {
+                        "thread_id": thread_key,
+                        "latest_message_id": str(row["message_id"]),
+                        "latest_message_at": str(row["created_at"]),
+                        "latest_from_address": str(row["from_address"]),
+                        "message_count": 0,
+                        "reply_count": 0,
+                        "_latest_key": latest_key,
+                    }
+                    summaries_by_thread[thread_key] = summary
+                summary["message_count"] = int(summary["message_count"]) + 1
+                if row["in_reply_to_message_id"] is not None:
+                    summary["reply_count"] = int(summary["reply_count"]) + 1
+                if latest_key >= summary["_latest_key"]:
+                    summary["latest_message_id"] = str(row["message_id"])
+                    summary["latest_message_at"] = str(row["created_at"])
+                    summary["latest_from_address"] = str(row["from_address"])
+                    summary["_latest_key"] = latest_key
+
+            summaries: list[dict[str, Any]] = []
+            for summary in summaries_by_thread.values():
+                latest_key = summary["_latest_key"]
+                if not isinstance(latest_key, tuple) or len(latest_key) != 2:
+                    continue
+                read_key = read_state_by_thread.get(str(summary["thread_id"]))
+                summaries.append(
+                    {
+                        "thread_id": str(summary["thread_id"]),
+                        "latest_message_id": str(summary["latest_message_id"]),
+                        "latest_message_at": str(summary["latest_message_at"]),
+                        "latest_from_address": str(summary["latest_from_address"]),
+                        "message_count": int(summary["message_count"]),
+                        "reply_count": int(summary["reply_count"]),
+                        "unread": read_key is None or latest_key > read_key,
+                        "_latest_key": latest_key,
+                    }
+                )
+
+            summaries.sort(key=lambda item: item["_latest_key"], reverse=True)
+            return [
+                {
+                    "thread_id": str(item["thread_id"]),
+                    "latest_message_id": str(item["latest_message_id"]),
+                    "latest_message_at": str(item["latest_message_at"]),
+                    "latest_from_address": str(item["latest_from_address"]),
+                    "message_count": int(item["message_count"]),
+                    "reply_count": int(item["reply_count"]),
+                    "unread": bool(item["unread"]),
+                }
+                for item in summaries[:limit]
+            ]
+
+    def mark_thread_read(
+        self,
+        *,
+        thread_id: str,
+        to_address: str,
+        actor: Optional[str] = None,
+    ) -> bool:
+        mailbox = self.resolve_address(to_address)
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                resolved_thread_id = self._resolve_thread_id(conn, thread_id=thread_id)
+                if resolved_thread_id is None:
+                    conn.commit()
+                    return False
+                visible_rows = self._load_visible_message_rows_for_mailbox(
+                    conn,
+                    mailbox_id=mailbox.mailbox_id,
+                    thread_id=resolved_thread_id,
+                )
+                if not visible_rows:
+                    conn.commit()
+                    return False
+                latest_row = max(
+                    visible_rows,
+                    key=lambda row: (str(row["created_at"]), str(row["message_id"])),
+                )
+                now = utc_now()
+                conn.execute(
+                    """
+                    INSERT INTO mailbox_thread_reads(mailbox_id, thread_id, last_read_message_id, marked_read_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(mailbox_id, thread_id) DO UPDATE SET
+                        last_read_message_id = excluded.last_read_message_id,
+                        marked_read_at = excluded.marked_read_at
+                    """,
+                    (mailbox.mailbox_id, resolved_thread_id, latest_row["message_id"], now),
+                )
+                self._event(
+                    conn,
+                    "thread.marked_read",
+                    message_id=latest_row["message_id"],
+                    mailbox_id=mailbox.mailbox_id,
+                    actor=actor or mailbox.address,
+                    details={"thread_id": resolved_thread_id, "to_address": mailbox.address},
+                )
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _list_retry_queue(
+        self,
+        *,
+        scope_clause: str,
+        scope_params: list[Any],
+        to_address: str | None,
+        project_id: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+
+        filters = [
+            scope_clause,
+            "d.status = 'queued'",
+            "d.attempt_count > 0",
+            "d.attempt_count < d.max_attempts",
+        ]
+        params: list[Any] = list(scope_params)
+        if to_address is not None:
+            filters.append("dst.address_canonical = ?")
+            params.append(to_address)
+        if project_id is not None:
+            filters.append("p.project_id = ?")
+            params.append(project_id)
+        params.append(limit)
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    d.delivery_id,
+                    d.message_id,
+                    dst.address_canonical AS to_address,
+                    d.status,
+                    d.attempt_count,
+                    d.max_attempts,
+                    d.available_at AS next_retry_at,
+                    d.last_error
+                FROM deliveries d
+                JOIN mailboxes dst ON dst.mailbox_id = d.to_mailbox_id
+                JOIN projects p ON p.project_pk = dst.project_pk
+                WHERE {" AND ".join(filters)}
+                ORDER BY d.available_at ASC, d.delivery_id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return [
+            {
+                "delivery_id": int(row["delivery_id"]),
+                "message_id": str(row["message_id"]),
+                "to": str(row["to_address"]),
+                "status": str(row["status"]),
+                "attempt_count": int(row["attempt_count"]),
+                "max_attempts": int(row["max_attempts"]),
+                "next_retry_at": str(row["next_retry_at"]),
+                "last_error_summary": summarize_retry_error(
+                    row["last_error"],
+                    limit=RETRY_QUEUE_ERROR_SUMMARY_LIMIT,
+                ),
+            }
+            for row in rows
+        ]
+
+    def list_retry_queue(
+        self,
+        *,
+        to_address: str | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        canonical_to_address = self.resolve_address(to_address).address if to_address is not None else None
+        normalized_project_id = (
+            normalize_address_component(project_id, "project_id") if project_id is not None else None
+        )
+        return self._list_retry_queue(
+            scope_clause="1 = 1",
+            scope_params=[],
+            to_address=canonical_to_address,
+            project_id=normalized_project_id,
+            limit=limit,
+        )
+
+    def list_retry_queue_for_harness(
+        self,
+        *,
+        harness_id: str,
+        to_address: str | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        normalized_harness_id = normalize_harness_id(harness_id)
+        canonical_to_address = None
+        if to_address is not None:
+            canonical_to_address = self.resolve_address_for_harness(to_address, normalized_harness_id).address
+        normalized_project_id = (
+            normalize_address_component(project_id, "project_id") if project_id is not None else None
+        )
+        return self._list_retry_queue(
+            scope_clause="dst.harness_id = ?",
+            scope_params=[normalized_harness_id],
+            to_address=canonical_to_address,
+            project_id=normalized_project_id,
+            limit=limit,
+        )
+
+    def list_retry_queue_for_addresses(
+        self,
+        *,
+        addresses: list[str],
+        to_address: str | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        canonical_addresses = unique_preserving_order([canonicalize_address(address) for address in addresses])
+        if not canonical_addresses:
+            return []
+        canonical_to_address = canonicalize_address(to_address) if to_address is not None else None
+        if canonical_to_address is not None and canonical_to_address not in set(canonical_addresses):
+            return []
+        normalized_project_id = (
+            normalize_address_component(project_id, "project_id") if project_id is not None else None
+        )
+        placeholders = ", ".join("?" for _ in canonical_addresses)
+        return self._list_retry_queue(
+            scope_clause=f"dst.address_canonical IN ({placeholders})",
+            scope_params=list(canonical_addresses),
+            to_address=canonical_to_address,
+            project_id=normalized_project_id,
+            limit=limit,
+        )
 
 
 def _demo() -> None:

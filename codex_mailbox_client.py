@@ -230,6 +230,14 @@ class MailboxHTTPClient:
             if key != "_cache_key"
         }
 
+    def logout(self) -> dict[str, Any]:
+        payload = self._request_json("POST", "/logout")
+        self._whoami_cache = None
+        self._login_cache = None
+        self._session_profile = None
+        self._session_token = None
+        return payload
+
     def resolve(self, address: str) -> dict[str, Any]:
         payload = self._request_json("POST", "/resolve", {"address": address})
         return payload["mailbox"]
@@ -264,6 +272,66 @@ class MailboxHTTPClient:
                 return None
             raise
         return payload["thread"]
+
+    def get_thread_summaries(
+        self,
+        *,
+        to_address: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        effective_to_address = to_address or self._effective_inbox_address()
+        if not effective_to_address and self._current_session_profile() is None:
+            raise ValueError(
+                "to_address is required unless configured locally or provided by an agent session login"
+            )
+        query = {"limit": str(limit)}
+        if effective_to_address:
+            query["to_address"] = effective_to_address
+        return self._request_json(
+            "GET",
+            "/thread-summaries",
+            query=query,
+        )
+
+    def mark_thread_read(
+        self,
+        *,
+        thread_id: str,
+        to_address: str | None = None,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        effective_to_address = to_address or self._effective_inbox_address()
+        if not effective_to_address and self._current_session_profile() is None:
+            raise ValueError(
+                "to_address is required unless configured locally or provided by an agent session login"
+            )
+        body = {
+            "thread_id": thread_id,
+            "actor": actor or self.default_consumer_id,
+        }
+        if effective_to_address:
+            body["to_address"] = effective_to_address
+        return self._request_json("POST", "/mark-thread-read", body)
+
+    def retry_queue(
+        self,
+        *,
+        to_address: str | None = None,
+        project_id: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        query: dict[str, str] = {}
+        if to_address is not None:
+            query["to_address"] = to_address
+        if project_id is not None:
+            query["project_id"] = project_id
+        if limit is not None:
+            query["limit"] = str(limit)
+        return self._request_json("GET", "/retry-queue", query=query or None)
 
     def send(
         self,
@@ -437,6 +505,9 @@ class MailboxHTTPClient:
             return self.config.inbox_address
         session_profile = self._current_session_profile()
         if session_profile:
+            default_inbox_address = session_profile.get("default_inbox_address")
+            if isinstance(default_inbox_address, str) and default_inbox_address.strip():
+                return default_inbox_address
             default_claims = session_profile.get("default_claim_addresses")
             if isinstance(default_claims, list) and len(default_claims) == 1:
                 return str(default_claims[0])
@@ -548,6 +619,7 @@ class MailboxHTTPClient:
         except error.HTTPError as exc:
             if (
                 exc.code == 401
+                and path != "/logout"
                 and not use_bootstrap_token
                 and auth_token == self._session_token
                 and self._configured_login_identity()
@@ -566,7 +638,7 @@ class MailboxHTTPClient:
             return self.config.token
         if self._session_token:
             return self._session_token
-        if path not in {"/healthz", "/whoami", "/login"} and self._configured_login_identity():
+        if path not in {"/healthz", "/whoami", "/login", "/logout"} and self._configured_login_identity():
             self._current_session_profile()
             if self._session_token:
                 return self._session_token

@@ -1,0 +1,50 @@
+Read `AGENTS.md` and `.where-agent-progress.md` first.
+
+You are working in the canonical `mail4agent` repo on the dogfood integration branch.
+
+Goal:
+
+Merge the first Wave 1 Python dogfood features into this repo so it becomes a stronger real mailbox baseline for other agents.
+
+Target features to integrate:
+
+1. admin mailbox access
+   Source oracle:
+   `E:\agent_misc\benchmarks\results\20260324T_mail4agent_admin_mailbox_access_r2\20260324T080228Z\medium_mail4agent_admin_mailbox_access__single_xhigh__r2__workspace`
+
+2. retry queue visibility
+   Source oracle:
+   `E:\agent_misc\benchmarks\results\20260323T_mail4agent_feature_round3\20260323T035715Z\small_mail4agent_retry_queue_visibility__single_xhigh__r1__workspace`
+
+3. thread summary and unread state
+   Source oracle:
+   `E:\agent_misc\benchmarks\results\20260323T_mail4agent_feature_round3\20260323T035715Z\medium_mail4agent_thread_summary_and_unread_state__single_xhigh__r1__workspace`
+
+Constraints:
+
+- Keep this repo Python-standard-library-only.
+- Keep Python as the product source of truth.
+- Keep admin page UI work out of scope for this run.
+- Do not wholesale copy benchmark scaffolding or result-specific progress churn from the source workspaces.
+- Port product/runtime code, CLI behavior, docs, and only the minimum standard-library validation needed for confidence.
+- Preserve existing core mailbox behavior while adding the new feature surfaces.
+
+Subagent guidance:
+
+- Use repo-native subagents for bounded comparison work where helpful.
+- Good delegation targets are: source-workspace diff reading, feature-specific route/CLI contract extraction, and test-surface comparison.
+- Keep the main integration decisions in the parent agent.
+
+Expected outcome:
+
+- The canonical repo gains the three Wave 1 feature slices in a coherent Python baseline.
+- README and/or docs mention the new operator-facing capabilities if needed.
+- Add a minimal repo-local `test/` package only if it is the cleanest way to validate the merged features.
+- Run concrete validation before finishing and summarize what passed.
+
+Avoid:
+
+- Rust feature-port work
+- bridge/webhook integration work
+- benchmark-only dashboard or harness edits
+- unrelated cleanup

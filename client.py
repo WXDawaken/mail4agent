@@ -18,11 +18,13 @@ Compatibility mode:
     Get-Content .\\session.token | python client.py --base-url http://127.0.0.1:8787 thread --message-id <MESSAGE_ID>
 
 Auth input precedence for non-login commands:
-    1. `--token`
-    2. `--token-file`
-    3. `MAILBOX_SESSION_TOKEN`
-    4. `MAILBOX_TOKEN`
-    5. piped stdin (JSON bundle or plain token)
+    1. `--admin-token`
+    2. `--token`
+    3. `--token-file`
+    4. `MAILBOX_SESSION_TOKEN`
+    5. `MAILBOX_TOKEN`
+    6. `MAILBOX_ADMIN_TOKEN`
+    7. piped stdin (JSON bundle or plain token)
 """
 
 import argparse
@@ -76,6 +78,7 @@ def main() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Mailbox stdio CLI")
     parser.add_argument("--base-url", dest="global_base_url", help="mailbox server base URL")
+    parser.add_argument("--admin-token", dest="global_admin_token", help="admin bearer token for direct mailbox access")
     parser.add_argument("--token", dest="global_token", help="auth token (session token for normal commands)")
     parser.add_argument("--token-file", dest="global_token_file", help="read auth token or login bundle from file")
     parser.add_argument("--timeout-seconds", dest="global_timeout_seconds", type=float, default=None, help="HTTP timeout")
@@ -91,6 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--base-url", help="mailbox server base URL")
+    common.add_argument("--admin-token", help="admin bearer token for direct mailbox access")
     common.add_argument("--token", help="auth token (session token for normal commands)")
     common.add_argument("--token-file", help="read auth token or login bundle from file")
     common.add_argument("--timeout-seconds", type=float, default=None, help="HTTP timeout")
@@ -124,6 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("healthz", parents=[common], help="check server health")
     subparsers.add_parser("whoami", parents=[common], help="show caller identity")
+    subparsers.add_parser("logout", parents=[common], help="invalidate the current agent session token")
 
     resolve_parser = subparsers.add_parser("resolve", parents=[common], help="resolve one address")
     resolve_parser.add_argument("--address", required=True)
@@ -136,6 +141,23 @@ def _build_parser() -> argparse.ArgumentParser:
     thread_parser.add_argument("--thread-id")
     thread_parser.add_argument("--message-id")
     thread_parser.add_argument("--allow-missing", action="store_true")
+
+    retry_queue_parser = subparsers.add_parser(
+        "retry-queue",
+        parents=[common],
+        help="list retry-pending deliveries visible to the caller",
+    )
+    retry_queue_parser.add_argument("--to-address")
+    retry_queue_parser.add_argument("--project-id")
+    retry_queue_parser.add_argument("--limit", type=int, default=50)
+
+    thread_summaries_parser = subparsers.add_parser(
+        "thread-summaries",
+        parents=[common],
+        help="list compact thread summaries for one mailbox",
+    )
+    thread_summaries_parser.add_argument("--to-address")
+    thread_summaries_parser.add_argument("--limit", type=int, default=20)
 
     send_parser = subparsers.add_parser("send", parents=[common], help="send one message")
     send_parser.add_argument("--to-address", required=True)
@@ -203,6 +225,15 @@ def _build_parser() -> argparse.ArgumentParser:
     heartbeat_parser.add_argument("--delivery-id", required=True, type=int)
     heartbeat_parser.add_argument("--claim-token", required=True)
     heartbeat_parser.add_argument("--lease-seconds", type=int, default=60)
+
+    mark_thread_read_parser = subparsers.add_parser(
+        "mark-thread-read",
+        parents=[common],
+        help="mark one mailbox thread as read",
+    )
+    mark_thread_read_parser.add_argument("--thread-id", required=True)
+    mark_thread_read_parser.add_argument("--to-address")
+    mark_thread_read_parser.add_argument("--actor")
 
     consume_parser = subparsers.add_parser("consume", parents=[common], help="continuous claim -> child stdin -> ack/nack worker")
     consume_parser.add_argument("--to-address")
@@ -295,6 +326,8 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
         return client.healthz()
     if args.command == "whoami":
         return client.whoami()
+    if args.command == "logout":
+        return client.logout()
     if args.command == "resolve":
         return {"ok": True, "mailbox": client.resolve(args.address)}
     if args.command == "message":
@@ -307,6 +340,17 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             allow_missing=bool(args.allow_missing),
         )
         return {"ok": thread is not None, "thread": thread}
+    if args.command == "thread-summaries":
+        return client.get_thread_summaries(
+            to_address=args.to_address,
+            limit=args.limit,
+        )
+    if args.command == "retry-queue":
+        return client.retry_queue(
+            to_address=args.to_address,
+            project_id=args.project_id,
+            limit=args.limit,
+        )
     if args.command == "send":
         auth_source = getattr(args, "_auth_source", None)
         payload = _load_send_payload(args, allow_stdin=auth_source != "stdin")
@@ -393,6 +437,12 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             lease_seconds=args.lease_seconds,
         )
         return {"ok": ok}
+    if args.command == "mark-thread-read":
+        return client.mark_thread_read(
+            thread_id=args.thread_id,
+            to_address=args.to_address,
+            actor=args.actor or _default_consumer_id(),
+        )
     if args.command == "consume":
         return _run_consume(client, args)
     raise ValueError(f"unsupported command: {args.command}")
@@ -606,8 +656,15 @@ def _resolve_harness_token(args: argparse.Namespace) -> str:
 
 
 def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
+    admin_token_option = _option_value(args, "admin_token")
     token_option = _option_value(args, "token")
     token_file_option = _option_value(args, "token_file")
+    if admin_token_option and (token_option or token_file_option):
+        raise ValueError("provide either --admin-token or --token/--token-file, not both")
+    if admin_token_option:
+        result = {"token": str(admin_token_option).strip(), "source": "admin_arg"}
+        setattr(args, "_auth_source", "admin_arg")
+        return result
     if token_option:
         result = {"token": str(token_option).strip(), "source": "arg"}
         setattr(args, "_auth_source", "arg")
@@ -627,13 +684,18 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
         result = {"token": env_token, "source": "env"}
         setattr(args, "_auth_source", "env")
         return result
+    env_admin_token = (os.environ.get("MAILBOX_ADMIN_TOKEN") or "").strip()
+    if env_admin_token:
+        result = {"token": env_admin_token, "source": "env_admin"}
+        setattr(args, "_auth_source", "env_admin")
+        return result
     stdin_auth = _read_stdin_auth()
     if stdin_auth is not None:
         stdin_auth["source"] = "stdin"
         setattr(args, "_auth_source", "stdin")
         return stdin_auth
     raise ValueError(
-        "missing auth token; use --token, --token-file, MAILBOX_SESSION_TOKEN, MAILBOX_TOKEN, or stdin"
+        "missing auth token; use --admin-token, --token, --token-file, MAILBOX_SESSION_TOKEN, MAILBOX_TOKEN, MAILBOX_ADMIN_TOKEN, or stdin"
     )
 
 
@@ -922,19 +984,25 @@ def _format_text_payload(payload: dict[str, Any], args: argparse.Namespace) -> s
         return _format_healthz_text(payload)
     if command == "whoami":
         return _format_whoami_text(payload)
+    if command == "logout":
+        return _format_logout_text(payload)
     if command == "resolve":
         return _format_resolve_text(payload)
     if command == "message":
         return _format_message_wrapper_text(payload)
     if command == "thread":
         return _format_thread_text(payload)
+    if command == "thread-summaries":
+        return _format_thread_summaries_text(payload)
+    if command == "retry-queue":
+        return _format_retry_queue_text(payload)
     if command == "send":
         return _format_send_text(payload)
     if command == "reply":
         return _format_reply_text(payload)
     if command == "claim":
         return _format_claim_text(payload)
-    if command in {"ack", "nack", "heartbeat"}:
+    if command in {"ack", "nack", "heartbeat", "mark-thread-read"}:
         return _format_boolean_result_text(command, payload)
     return json.dumps(payload, ensure_ascii=False, indent=2 if _pretty_enabled(args) else None)
 
@@ -1051,11 +1119,67 @@ def _format_thread_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_logout_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_field(lines, "logged_out", payload.get("logged_out"))
+    _append_common_context(lines, payload)
+    session = payload.get("session")
+    if isinstance(session, dict):
+        lines.append("")
+        lines.append("session:")
+        lines.extend(_indent_lines(_format_session_lines(session), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_thread_summaries_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    threads = payload.get("threads")
+    if not isinstance(threads, list):
+        lines.append("")
+        lines.append("threads: none")
+        return "\n".join(lines)
+    if not threads:
+        lines.append("")
+        lines.append("threads: none")
+        return "\n".join(lines)
+    for index, thread in enumerate(threads, start=1):
+        if not isinstance(thread, dict):
+            continue
+        lines.append("")
+        lines.append(f"thread[{index}]:")
+        lines.extend(_indent_lines(_format_thread_summary_lines(thread), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_retry_queue_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    deliveries = payload.get("deliveries")
+    if not isinstance(deliveries, list) or not deliveries:
+        lines.append("")
+        lines.append("deliveries: none")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append(f"deliveries: {len(deliveries)}")
+    for index, delivery in enumerate(deliveries, start=1):
+        if not isinstance(delivery, dict):
+            continue
+        lines.append("")
+        lines.append(f"delivery[{index}]:")
+        lines.extend(_indent_lines(_format_retry_delivery_lines(delivery), prefix="  "))
+    return "\n".join(lines)
+
+
 def _format_send_text(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     _append_field(lines, "ok", payload.get("ok"))
     _append_field(lines, "message_id", payload.get("message_id"))
     _append_field(lines, "delivery_id", payload.get("delivery_id"))
+    _append_field(lines, "thread_id", payload.get("thread_id"))
     _append_field(lines, "deduplicated", payload.get("deduplicated"))
     _append_common_context(lines, payload)
     return "\n".join(lines)
@@ -1124,6 +1248,7 @@ def _format_session_lines(session: dict[str, Any]) -> list[str]:
     _append_field(lines, "agent_name", session.get("agent_name"))
     _append_field(lines, "session_name", session.get("session_name"))
     _append_field(lines, "default_from_address", session.get("default_from_address"))
+    _append_field(lines, "default_inbox_address", session.get("default_inbox_address"))
     _append_list_block(lines, "default_claim_addresses", session.get("default_claim_addresses"))
     _append_list_block(lines, "send_as_addresses", session.get("send_as_addresses"))
     _append_list_block(lines, "claim_addresses", session.get("claim_addresses"))
@@ -1180,10 +1305,36 @@ def _format_delivery_lines(delivery: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_thread_summary_lines(summary: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    _append_field(lines, "thread_id", summary.get("thread_id"))
+    _append_field(lines, "latest_message_id", summary.get("latest_message_id"))
+    _append_field(lines, "latest_message_at", summary.get("latest_message_at"))
+    _append_field(lines, "latest_from_address", summary.get("latest_from_address"))
+    _append_field(lines, "message_count", summary.get("message_count"))
+    _append_field(lines, "reply_count", summary.get("reply_count"))
+    _append_field(lines, "unread", summary.get("unread"))
+    return lines
+
+
+def _format_retry_delivery_lines(delivery: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    _append_field(lines, "delivery_id", delivery.get("delivery_id"))
+    _append_field(lines, "message_id", delivery.get("message_id"))
+    _append_field(lines, "to", delivery.get("to"))
+    _append_field(lines, "status", delivery.get("status"))
+    _append_field(lines, "attempt_count", delivery.get("attempt_count"))
+    _append_field(lines, "max_attempts", delivery.get("max_attempts"))
+    _append_field(lines, "next_retry_at", delivery.get("next_retry_at"))
+    _append_field(lines, "last_error_summary", delivery.get("last_error_summary"))
+    return lines
+
+
 def _append_common_context(lines: list[str], payload: dict[str, Any]) -> None:
     _append_field(lines, "caller_harness_id", payload.get("caller_harness_id"))
     _append_field(lines, "auth_kind", payload.get("auth_kind"))
     _append_field(lines, "agent_session_id", payload.get("agent_session_id"))
+    _append_field(lines, "admin", payload.get("admin"))
 
 
 def _append_field(lines: list[str], label: str, value: Any) -> None:
