@@ -159,6 +159,7 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox_parser.add_argument("--to-address")
     inbox_parser.add_argument("--limit", type=int, default=20)
     inbox_parser.add_argument("--message-type")
+    inbox_parser.add_argument("--since")
 
     thread_summaries_parser = subparsers.add_parser(
         "thread-summaries",
@@ -354,6 +355,7 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             to_address=args.to_address,
             limit=args.limit,
             message_type=args.message_type,
+            since=args.since,
         )
     if args.command == "thread-summaries":
         return client.get_thread_summaries(

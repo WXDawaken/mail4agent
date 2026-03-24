@@ -2624,6 +2624,7 @@ class SQLiteMailbox:
         to_address: str,
         limit: int = 20,
         message_type: str | None = None,
+        since: str | None = None,
     ) -> list[dict[str, Any]]:
         if limit < 0:
             raise ValueError("limit must be >= 0")
@@ -2637,12 +2638,29 @@ class SQLiteMailbox:
             if not normalized_message_type:
                 normalized_message_type = None
 
+        normalized_since = None
+        if since is not None:
+            normalized_since = str(since).strip()
+            if not normalized_since:
+                normalized_since = None
+            else:
+                normalized_since = (
+                    parse_utc_timestamp(normalized_since)
+                    .astimezone(timezone.utc)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z")
+                )
+
         with self.connect() as conn:
             params: list[Any] = [mailbox.mailbox_id, mailbox.mailbox_id]
             message_type_filter = ""
             if normalized_message_type is not None:
                 message_type_filter = "AND m.message_type = ?"
                 params.append(normalized_message_type)
+            since_filter = ""
+            if normalized_since is not None:
+                since_filter = "AND m.created_at >= ?"
+                params.append(normalized_since)
             params.append(limit)
             rows = conn.execute(
                 f"""
@@ -2659,6 +2677,7 @@ class SQLiteMailbox:
                         )
                       )
                   {message_type_filter}
+                  {since_filter}
                 ORDER BY m.created_at DESC, m.message_id DESC
                 LIMIT ?
                 """,

@@ -203,6 +203,12 @@ Filter that inbox view by message type when needed:
 python .\client.py inbox --limit 10 --message-type codex.task
 ```
 
+Filter that inbox view to messages created at or after a specific ISO timestamp:
+
+```powershell
+python .\client.py inbox --limit 10 --since 2026-03-24T16:02:19.605Z
+```
+
 List thread summaries for the current session inbox:
 
 ```powershell

@@ -830,6 +830,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             limit_text = (query.get("limit") or ["20"])[0]
             limit = int(limit_text)
             message_type = (query.get("message_type") or [None])[0]
+            since = (query.get("since") or [None])[0]
             mailbox = self._resolve_thread_state_mailbox(
                 requested_address,
                 auth,
@@ -842,6 +843,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 to_address=mailbox.address,
                 limit=limit,
                 message_type=message_type,
+                since=since,
             )
             return 200, self._with_caller({"ok": True, "messages": messages}, auth)
 
