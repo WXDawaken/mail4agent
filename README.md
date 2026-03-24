@@ -10,6 +10,7 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 - Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
 - Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/thread-summaries/mark-thread-read/reply/consume
+- Includes repo-local dogfood helpers for medium planner/reviewer runs and a high-effort operator run
 - Stays dependency-free: Python standard library only
 
 ## Main Files
@@ -289,16 +290,24 @@ For a bounded two-agent Codex smoke on top of this mailbox repo:
 4. Launch one medium planner agent:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 planner
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 planner
 ```
 
 5. Launch one medium reviewer agent if the planner hands work off:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 reviewer
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 reviewer
 ```
 
 See [docs/dogfood-medium-smoke-20260324.md](E:\agent_misc\mail4agent\docs\dogfood-medium-smoke-20260324.md) for the full runbook.
+
+For bounded mailbox-native update work, launch the operator path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 operator
+```
+
+That operator path logs in with the harness token, targets the `operator@mail4agent.dogfood` group mailbox, and uses `gpt-5.4` with `model_reasoning_effort = high`. See [docs/dogfood-operator-update-flow-20260324.md](E:\agent_misc\mail4agent\docs\dogfood-operator-update-flow-20260324.md).
 
 ## Notes
 

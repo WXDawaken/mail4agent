@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Bootstrap a local dogfood mailbox profile for medium Codex agents.
+"""Bootstrap local dogfood mailbox profiles for Codex agents.
 
 This helper assumes the HTTP server is already running and that an admin token
 is available. It creates a small local harness/project, installs a same-project
@@ -142,11 +142,25 @@ def main() -> None:
         "/admin/create_harness_token",
         {
             "harness_id": harness_id,
-            "token_name": "dogfood-medium",
+            "token_name": "dogfood-agents",
         },
     )
     harness_token = str(token_payload["token"])
 
+    operator_preview = _request_json(
+        base_url,
+        args.admin_token,
+        "POST",
+        "/admin/preview_agent_session",
+        {
+            "harness_id": harness_id,
+            "project_id": project_id,
+            "local_part": "operator",
+            "mailbox_type": "group",
+            "agent_name": "dogfood-operator",
+            "accept_messages": True,
+        },
+    )["preview"]
     planner_preview = _request_json(
         base_url,
         args.admin_token,
@@ -176,6 +190,16 @@ def main() -> None:
         },
     )["preview"]
 
+    operator_config = {
+        "base_url": base_url,
+        "from_address": operator_preview.get("default_from_address"),
+        "inbox_address": (operator_preview.get("default_claim_addresses") or [None])[0],
+        "project_id": project_id,
+        "local_part": "operator",
+        "mailbox_type": "group",
+        "agent_name": "dogfood-operator",
+        "consumer_id": "dogfood-operator-high",
+    }
     planner_config = {
         "base_url": base_url,
         "from_address": planner_preview.get("default_from_address"),
@@ -199,10 +223,13 @@ def main() -> None:
 
     harness_token_path = runtime_dir / "harness.token"
     harness_token_path.write_text(harness_token + "\n", encoding="utf-8")
+    operator_config_path = runtime_dir / "operator.mailbox_client.json"
     planner_config_path = runtime_dir / "planner.mailbox_client.json"
     reviewer_config_path = runtime_dir / "reviewer.mailbox_client.json"
+    _write_json(operator_config_path, operator_config)
     _write_json(planner_config_path, planner_config)
     _write_json(reviewer_config_path, reviewer_config)
+    _write_json(runtime_dir / "operator.preview.json", operator_preview)
     _write_json(runtime_dir / "planner.preview.json", planner_preview)
     _write_json(runtime_dir / "reviewer.preview.json", reviewer_preview)
 
@@ -216,6 +243,7 @@ def main() -> None:
         "reviewer_address": reviewer_address,
         "runtime_dir": str(runtime_dir.resolve()),
         "harness_token_file": str(harness_token_path.resolve()),
+        "operator_config_file": str(operator_config_path.resolve()),
         "planner_config_file": str(planner_config_path.resolve()),
         "reviewer_config_file": str(reviewer_config_path.resolve()),
     }

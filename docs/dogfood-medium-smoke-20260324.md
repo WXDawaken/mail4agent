@@ -31,8 +31,10 @@ python .\dogfood_smoke_bootstrap.py
 That writes runtime-only assets under `.tmp_dogfood\`:
 
 - `harness.token`
+- `operator.mailbox_client.json`
 - `planner.mailbox_client.json`
 - `reviewer.mailbox_client.json`
+- `operator.preview.json`
 - `planner.preview.json`
 - `reviewer.preview.json`
 - `bootstrap_summary.json`
@@ -69,13 +71,13 @@ python .\client.py retry-queue --admin-token $env:MAILBOX_ADMIN_TOKEN --project-
 Planner:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 planner
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 planner
 ```
 
 Reviewer:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launch_dogfood_medium_agent.ps1 reviewer
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 reviewer
 ```
 
 Each launcher:
@@ -87,6 +89,14 @@ Each launcher:
 - sets `CODEX_HOME` to repo-local `.codex_home_dogfood` and bootstraps the minimal auth/config files from the global Codex home
 - runs `codex exec` with `gpt-5.4` and `model_reasoning_effort = medium`
 - processes at most one mailbox delivery and exits
+
+The same bootstrap can now also launch a bounded code-editing operator:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 operator
+```
+
+That operator path uses `gpt-5.4` with `model_reasoning_effort = high` and is documented separately in [dogfood-operator-update-flow-20260324.md](/E:/agent_misc/mail4agent/docs/dogfood-operator-update-flow-20260324.md).
 
 ## Suggested Smoke Sequence
 

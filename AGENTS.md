@@ -33,6 +33,8 @@
 - `python E:\agent_misc\mail4agent\client.py --format text thread --message-id <MESSAGE_ID>`
 - `python E:\agent_misc\mail4agent\codex_mailbox_demo_agent.py`
 - `python E:\agent_misc\mail4agent\codex_mailbox_demo_send.py --task-type upper_text --text "hello codex" --wait-for-reply`
+- `powershell -ExecutionPolicy Bypass -File E:\agent_misc\mail4agent\launch_dogfood_agent.ps1 planner`
+- `powershell -ExecutionPolicy Bypass -File E:\agent_misc\mail4agent\launch_dogfood_agent.ps1 operator`
 
 ## Notes
 
