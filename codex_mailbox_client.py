@@ -301,6 +301,7 @@ class MailboxHTTPClient:
         to_address: str | None = None,
         limit: int = 20,
         message_type: str | None = None,
+        thread_id: str | None = None,
         since: str | None = None,
         unread_only: bool = False,
     ) -> dict[str, Any]:
@@ -316,6 +317,8 @@ class MailboxHTTPClient:
             query["to_address"] = effective_to_address
         if message_type is not None:
             query["message_type"] = message_type
+        if thread_id is not None:
+            query["thread_id"] = thread_id
         if since is not None:
             query["since"] = since
         if unread_only:

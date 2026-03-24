@@ -843,6 +843,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             limit_text = (query.get("limit") or ["20"])[0]
             limit = int(limit_text)
             message_type = (query.get("message_type") or [None])[0]
+            thread_id = (query.get("thread_id") or [None])[0]
             since = (query.get("since") or [None])[0]
             unread_only = _parse_query_bool((query.get("unread_only") or [None])[0], field_name="unread_only")
             mailbox = self._resolve_thread_state_mailbox(
@@ -857,6 +858,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 to_address=mailbox.address,
                 limit=limit,
                 message_type=message_type,
+                thread_id=thread_id,
                 since=since,
                 unread_only=unread_only,
             )

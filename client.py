@@ -159,6 +159,7 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox_parser.add_argument("--to-address")
     inbox_parser.add_argument("--limit", type=int, default=20)
     inbox_parser.add_argument("--message-type")
+    inbox_parser.add_argument("--thread-id")
     inbox_parser.add_argument("--since")
     inbox_parser.add_argument("--unread-only", action="store_true")
 
@@ -356,6 +357,7 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             to_address=args.to_address,
             limit=args.limit,
             message_type=args.message_type,
+            thread_id=args.thread_id,
             since=args.since,
             unread_only=bool(args.unread_only),
         )

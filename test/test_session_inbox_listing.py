@@ -213,6 +213,53 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
         reopened_items = inbox_items(after_reopen)
         self.assertEqual(message_ids_from_items(reopened_items), [str(reopened["message_id"])])
 
+    def test_http_inbox_route_can_filter_by_thread_id(self) -> None:
+        reviewer_session = login_role_session(
+            self.base_url,
+            self.tokens["codex"],
+            role="reviewer",
+            consumer_id="python-inbox-http-thread-id",
+            session_name="dogfood-inbox-http-thread-id",
+        )
+        session_token = auth_token_for_client(reviewer_session)
+
+        thread_a_first = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-thread-id", "step": 1},
+            subject="inbox http thread a first",
+            message_type="codex.inbox.thread-id",
+        )
+        self.pause_for_ordering()
+        thread_b = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-thread-id", "step": 2},
+            subject="inbox http thread b only",
+            message_type="codex.inbox.thread-id",
+        )
+        self.pause_for_ordering()
+        thread_a_second = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-thread-id", "step": 3},
+            subject="inbox http thread a second",
+            message_type="codex.inbox.thread-id",
+            thread_id=str(thread_a_first["thread_id"]),
+            in_reply_to_message_id=str(thread_a_first["message_id"]),
+        )
+
+        filtered = request_json(
+            self.base_url,
+            "GET",
+            "/inbox",
+            token=session_token,
+            query={"limit": 10, "thread_id": str(thread_a_first["thread_id"])},
+        )
+        filtered_items = inbox_items(filtered)
+        self.assertEqual(
+            message_ids_from_items(filtered_items),
+            [str(thread_a_second["message_id"]), str(thread_a_first["message_id"])],
+        )
+        self.assertNotIn(str(thread_b["message_id"]), message_ids_from_items(filtered_items))
+
     def test_cli_inbox_command_infers_session_default_inbox(self) -> None:
         reviewer_session = login_role_session(
             self.base_url,
@@ -290,6 +337,23 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
         self.assertNotIn(str(older["message_id"]), message_ids_from_items(visible))
         self.assertNotIn(str(ignored["message_id"]), message_ids_from_items(visible))
 
+        thread_filtered = run_client_json(
+            env,
+            "inbox",
+            "--limit",
+            "10",
+            "--message-type",
+            "codex.inbox.cli.keep",
+            "--thread-id",
+            str(older["thread_id"]),
+        )
+        thread_filtered_items = inbox_items(thread_filtered)
+        self.assertEqual(
+            message_ids_from_items(thread_filtered_items),
+            [str(newer["message_id"]), str(older["message_id"])],
+        )
+        self.assertNotIn(str(ignored["message_id"]), message_ids_from_items(thread_filtered_items))
+
         unread = run_client_json(
             env,
             "inbox",
@@ -317,6 +381,8 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             "10",
             "--message-type",
             "codex.inbox.cli.keep",
+            "--thread-id",
+            str(newer["thread_id"]),
             "--unread-only",
         )
         self.assertEqual(inbox_items(after_mark), [])

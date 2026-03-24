@@ -2624,6 +2624,7 @@ class SQLiteMailbox:
         to_address: str,
         limit: int = 20,
         message_type: str | None = None,
+        thread_id: str | None = None,
         since: str | None = None,
         unread_only: bool = False,
     ) -> list[dict[str, Any]]:
@@ -2639,6 +2640,12 @@ class SQLiteMailbox:
             normalized_message_type = str(message_type).strip()
             if not normalized_message_type:
                 normalized_message_type = None
+
+        normalized_thread_id = None
+        if thread_id is not None:
+            normalized_thread_id = str(thread_id).strip()
+            if not normalized_thread_id:
+                normalized_thread_id = None
 
         normalized_since = None
         if since is not None:
@@ -2659,6 +2666,10 @@ class SQLiteMailbox:
             if normalized_message_type is not None:
                 message_type_filter = "AND m.message_type = ?"
                 params.append(normalized_message_type)
+            thread_filter = ""
+            if normalized_thread_id is not None:
+                thread_filter = "AND m.thread_id = ?"
+                params.append(normalized_thread_id)
             since_filter = ""
             if normalized_since is not None:
                 since_filter = "AND m.created_at >= ?"
@@ -2693,6 +2704,7 @@ class SQLiteMailbox:
                         )
                       )
                   {message_type_filter}
+                  {thread_filter}
                   {since_filter}
                   {unread_filter}
                 ORDER BY m.created_at DESC, m.message_id DESC
