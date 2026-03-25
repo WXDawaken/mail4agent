@@ -21,6 +21,7 @@
 - The canonical repo now also has a bounded dogfood smoke/update profile for real Codex-agent mailbox trials: medium planner/reviewer plus a high-effort operator path for bounded repo-local updates.
 - The canonical repo now also has a first oncall direction: keep `client.py consume` as the generic worker primitive, but move role-aware mailbox supervision into a separate script instead of growing the main CLI indefinitely.
 - That first oncall direction is now implemented for `operator`: `mailbox_oncall.py` supervises one claimed delivery at a time, while `launch_dogfood_oncall_agent.ps1` stages runtime assets into a repo-local sandbox-visible directory before launching Codex.
+- The current oncall model is still intentionally stateless across supervisor processes, but the server now defaults claims to `mailbox_thread` serialization so one mailbox thread is processed serially even if more than one supervisor watches the same mailbox route.
 
 ## Milestones
 
@@ -38,6 +39,7 @@
 - If test harness assumptions are added ad hoc, agent communication results may become hard to compare across runs.
 - A premature full-language migration would blur product ownership and weaken comparability while Rust still depends on Python as a semantic oracle for many feature-port validations.
 - The new retry-queue and thread-summary surfaces currently compute from live SQLite rows without heavier indexing or pagination beyond simple limits; keep later scale work explicit.
+- The current oncall path still has no global mailbox lock across all routes; `mailbox_thread` serialization is intentionally local to one mailbox, so the same thread can still be processed independently by different route mailboxes when that is semantically desired.
 
 ## Decisions
 

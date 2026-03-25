@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, urlparse
 from sqlite_mailbox import (
     SQLiteMailbox,
     canonicalize_address,
+    normalize_claim_serialization_scope,
     normalize_address_component,
     parse_utc_timestamp,
     split_address,
@@ -919,6 +920,9 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 to_addresses=self._effective_claim_addresses(body, auth),
                 consumer_id=_require(body, "consumer_id", str),
                 lease_seconds=int(body.get("lease_seconds", 60)),
+                serialization_scope=normalize_claim_serialization_scope(
+                    _optional(body, "serialization_scope", str) or "mailbox_thread"
+                ),
             )
             return 200, self._with_caller({"ok": True, "delivery": result}, auth)
 

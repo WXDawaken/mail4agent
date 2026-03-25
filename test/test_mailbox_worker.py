@@ -19,6 +19,7 @@ class FakeMailboxClient:
         to_addresses: list[str] | None = None,
         consumer_id: str | None = None,
         lease_seconds: int = 60,
+        serialization_scope: str = "mailbox_thread",
     ) -> dict[str, object] | None:
         self.claim_calls.append(
             {
@@ -26,6 +27,7 @@ class FakeMailboxClient:
                 "to_addresses": list(to_addresses or []),
                 "consumer_id": consumer_id,
                 "lease_seconds": lease_seconds,
+                "serialization_scope": serialization_scope,
             }
         )
         if self._deliveries:
@@ -84,6 +86,7 @@ class MailboxWorkerTests(unittest.TestCase):
             to_address="operator@example.test",
             to_addresses=(),
             consumer_id="worker-ack",
+            serialization_scope="mailbox_thread",
             lease_seconds=120,
             heartbeat_interval_seconds=10.0,
             poll_interval_seconds=0.01,
@@ -120,6 +123,7 @@ class MailboxWorkerTests(unittest.TestCase):
             to_address="operator@example.test",
             to_addresses=(),
             consumer_id="worker-nack",
+            serialization_scope="mailbox_thread",
             lease_seconds=120,
             heartbeat_interval_seconds=10.0,
             poll_interval_seconds=0.01,
@@ -138,6 +142,28 @@ class MailboxWorkerTests(unittest.TestCase):
         self.assertEqual(client.nack_calls[0]["delivery_id"], 202)
         self.assertEqual(client.nack_calls[0]["retry_after_seconds"], 45)
         self.assertIn("status 7", str(client.nack_calls[0]["last_error"]))
+
+    def test_run_consume_loop_passes_serialization_scope_to_claim(self) -> None:
+        client = FakeMailboxClient([])
+        config = ConsumeConfig(
+            to_address="operator@example.test",
+            to_addresses=(),
+            consumer_id="worker-scope",
+            serialization_scope="delivery",
+            lease_seconds=120,
+            heartbeat_interval_seconds=10.0,
+            poll_interval_seconds=0.01,
+            retry_after_seconds=30,
+            ack_exit_codes=frozenset({0}),
+            once=True,
+            max_deliveries=None,
+        )
+
+        summary = run_consume_loop(client, config, lambda _delivery: 0)
+
+        self.assertEqual(summary["processed"], 0)
+        self.assertEqual(len(client.claim_calls), 1)
+        self.assertEqual(client.claim_calls[0]["serialization_scope"], "delivery")
 
     def test_build_handler_env_exports_delivery_fields(self) -> None:
         env = build_handler_env(

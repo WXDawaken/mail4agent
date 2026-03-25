@@ -17,6 +17,7 @@ class ConsumeConfig:
     to_address: str | None
     to_addresses: tuple[str, ...]
     consumer_id: str
+    serialization_scope: str
     lease_seconds: int
     heartbeat_interval_seconds: float
     poll_interval_seconds: float
@@ -46,6 +47,7 @@ def run_consume_loop(
             to_addresses=list(config.to_addresses) if config.to_addresses else None,
             consumer_id=config.consumer_id,
             lease_seconds=config.lease_seconds,
+            serialization_scope=config.serialization_scope,
         )
         if delivery is None:
             empty_polls += 1

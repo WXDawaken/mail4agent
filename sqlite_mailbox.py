@@ -17,6 +17,7 @@ ADDRESS_RE = re.compile(
     r"^(?P<local>[A-Za-z0-9._-]+)@(?P<project>[A-Za-z0-9._-]+)\.(?P<harness>[A-Za-z0-9._-]+)$"
 )
 ADDRESS_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+CLAIM_SERIALIZATION_SCOPES = frozenset({"delivery", "mailbox_thread"})
 
 
 def utc_now() -> str:
@@ -45,6 +46,13 @@ def canonicalize_address(address: str) -> str:
     project = match.group("project").lower()
     harness = match.group("harness").lower()
     return f"{local}@{project}.{harness}"
+
+
+def normalize_claim_serialization_scope(serialization_scope: str | None) -> str:
+    normalized = str(serialization_scope or "mailbox_thread").strip().lower()
+    if normalized not in CLAIM_SERIALIZATION_SCOPES:
+        raise ValueError("serialization_scope must be one of: delivery, mailbox_thread")
+    return normalized
 
 
 
@@ -2043,15 +2051,33 @@ class SQLiteMailbox:
         to_addresses: list[str],
         consumer_id: str,
         lease_seconds: int = 60,
+        serialization_scope: str = "mailbox_thread",
     ) -> Optional[dict[str, Any]]:
         if not to_addresses:
             raise ValueError("to_addresses must contain at least one address")
+        normalized_scope = normalize_claim_serialization_scope(serialization_scope)
         resolved_mailboxes = [self.resolve_address(address) for address in to_addresses]
         mailbox_ids = [mailbox.mailbox_id for mailbox in resolved_mailboxes]
         placeholders = ", ".join("?" for _ in mailbox_ids)
         claim_token = str(uuid.uuid4())
         lease_until = utc_after(lease_seconds)
         now = utc_now()
+        thread_scope_filter = ""
+        thread_scope_params: tuple[Any, ...] = ()
+        if normalized_scope == "mailbox_thread":
+            thread_scope_filter = """
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM deliveries d2
+                            JOIN messages m2 ON m2.message_id = d2.message_id
+                            WHERE d2.to_mailbox_id = d.to_mailbox_id
+                              AND m2.thread_id = m.thread_id
+                              AND d2.status = 'claimed'
+                              AND d2.lease_until >= ?
+                              AND d2.delivery_id <> d.delivery_id
+                          )
+            """
+            thread_scope_params = (now,)
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -2068,10 +2094,11 @@ class SQLiteMailbox:
                       AND d.available_at <= ?
                       AND (d.expires_at IS NULL OR d.expires_at > ?)
                       AND d.attempt_count < d.max_attempts
+                      {thread_scope_filter}
                     ORDER BY m.priority DESC, d.created_at ASC
                     LIMIT 1
                     """,
-                    (*mailbox_ids, now, now, now),
+                    (*mailbox_ids, now, now, now, *thread_scope_params),
                 ).fetchone()
                 if not candidate:
                     conn.commit()
@@ -2130,7 +2157,7 @@ class SQLiteMailbox:
                     delivery_id=row["delivery_id"],
                     mailbox_id=row["to_mailbox_id"],
                     actor=consumer_id,
-                    details={"lease_until": lease_until},
+                    details={"lease_until": lease_until, "serialization_scope": normalized_scope},
                 )
                 conn.commit()
                 return {
@@ -2151,16 +2178,25 @@ class SQLiteMailbox:
                     "attempt_count": row["attempt_count"],
                     "claimed_at": row["claimed_at"],
                     "lease_until": row["lease_until"],
+                    "serialization_scope": normalized_scope,
                 }
             except Exception:
                 conn.rollback()
                 raise
 
-    def claim(self, *, to_address: str, consumer_id: str, lease_seconds: int = 60) -> Optional[dict[str, Any]]:
+    def claim(
+        self,
+        *,
+        to_address: str,
+        consumer_id: str,
+        lease_seconds: int = 60,
+        serialization_scope: str = "mailbox_thread",
+    ) -> Optional[dict[str, Any]]:
         return self.claim_any(
             to_addresses=[to_address],
             consumer_id=consumer_id,
             lease_seconds=lease_seconds,
+            serialization_scope=serialization_scope,
         )
 
     def ack(self, *, delivery_id: int, claim_token: str, actor: Optional[str] = None) -> bool:

@@ -18,6 +18,7 @@
 - The supervisor defaults to one once-off attempt.
 - `--watch` turns it into a polling worker.
 - The child operator run handles exactly one already-claimed delivery.
+- Claims now default to `serialization_scope = mailbox_thread`, so one mailbox thread is processed serially even if more than one supervisor watches the same mailbox.
 
 ## Commands
 
@@ -66,3 +67,6 @@ python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood --session 
 - Use stable role or group mailbox addresses for the main oncall route.
 - Session or custom local-part addresses are supported, but only after they are normalized into concrete mailbox addresses.
 - This is intentionally separate from `client.py` so the main CLI stays protocol-focused.
+- Current mailbox coordination is mailbox-thread-scoped by default. Two supervisors will not hold the same delivery at once, and they also will not simultaneously claim different active deliveries from the same `thread_id` within one mailbox route.
+- Multiple supervisors on the same mailbox can still process different threads concurrently, which is the intended behavior.
+- If you intentionally run more than one supervisor for the same mailbox, give each one a distinct `--consumer-id` for observability. Use `--serialization-scope delivery` only when you explicitly want the older delivery-only behavior.

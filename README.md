@@ -291,6 +291,7 @@ python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood
 ```
 
 Use `--watch` if you want the supervisor to keep polling for more work instead of exiting after one attempt.
+Oncall and `consume` now default to mailbox-thread serialization: multiple supervisors will not claim the same delivery, and they also will not simultaneously process different active deliveries from the same thread within one mailbox route. Different threads can still run concurrently. Use distinct `--consumer-id` values for observability if you intentionally run more than one supervisor on the same mailbox, and set `--serialization-scope delivery` only if you explicitly want the older delivery-only behavior.
 
 Bash equivalent:
 

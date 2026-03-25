@@ -460,11 +460,13 @@ class MailboxHTTPClient:
         to_addresses: list[str] | tuple[str, ...] | None = None,
         consumer_id: str | None = None,
         lease_seconds: int = 60,
+        serialization_scope: str = "mailbox_thread",
     ) -> dict[str, Any] | None:
         effective_consumer = consumer_id or self.default_consumer_id
         body: dict[str, Any] = {
             "consumer_id": effective_consumer,
             "lease_seconds": lease_seconds,
+            "serialization_scope": serialization_scope,
         }
         if to_address is not None and to_addresses is not None:
             raise ValueError("provide either to_address or to_addresses, not both")

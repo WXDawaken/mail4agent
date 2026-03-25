@@ -87,6 +87,7 @@ def main() -> None:
             to_address=claim_addresses[0] if len(claim_addresses) == 1 else None,
             to_addresses=tuple(claim_addresses) if len(claim_addresses) > 1 else (),
             consumer_id=consumer_id,
+            serialization_scope=str(args.serialization_scope),
             lease_seconds=int(args.lease_seconds),
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             poll_interval_seconds=float(args.poll_interval_seconds),
@@ -149,6 +150,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--retry-after-seconds", type=int, default=60)
     parser.add_argument("--consumer-id")
+    parser.add_argument(
+        "--serialization-scope",
+        choices=("delivery", "mailbox_thread"),
+        default="mailbox_thread",
+        help="delivery: claim any queued delivery; mailbox_thread: serialize claims within one mailbox thread",
+    )
     parser.add_argument("--to-address")
     parser.add_argument("--to-addresses", help="comma-separated claim addresses")
     parser.add_argument("--local-part", help="resolve <local_part>@<project>.<harness> from bootstrap summary")

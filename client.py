@@ -221,6 +221,12 @@ def _build_parser() -> argparse.ArgumentParser:
     claim_parser.add_argument("--to-addresses", help="comma-separated claim addresses")
     claim_parser.add_argument("--consumer-id", help="consumer id; defaults to hostname-pid")
     claim_parser.add_argument("--lease-seconds", type=int, default=60)
+    claim_parser.add_argument(
+        "--serialization-scope",
+        choices=("delivery", "mailbox_thread"),
+        default="mailbox_thread",
+        help="delivery: claim any queued delivery; mailbox_thread: serialize claims within one mailbox thread",
+    )
 
     ack_parser = subparsers.add_parser("ack", parents=[common], help="ack one delivery")
     ack_parser.add_argument("--delivery-id", required=True, type=int)
@@ -253,6 +259,12 @@ def _build_parser() -> argparse.ArgumentParser:
     consume_parser.add_argument("--to-addresses", help="comma-separated claim addresses")
     consume_parser.add_argument("--consumer-id", help="consumer id; defaults to hostname-pid")
     consume_parser.add_argument("--lease-seconds", type=int, default=60)
+    consume_parser.add_argument(
+        "--serialization-scope",
+        choices=("delivery", "mailbox_thread"),
+        default="mailbox_thread",
+        help="delivery: claim any queued delivery; mailbox_thread: serialize claims within one mailbox thread",
+    )
     consume_parser.add_argument("--heartbeat-interval-seconds", type=float, default=None)
     consume_parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
     consume_parser.add_argument("--retry-after-seconds", type=int, default=30)
@@ -434,6 +446,7 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             to_addresses=to_addresses if to_addresses else None,
             consumer_id=args.consumer_id or _default_consumer_id(),
             lease_seconds=args.lease_seconds,
+            serialization_scope=args.serialization_scope,
         )
         return {"ok": True, "delivery": delivery}
     if args.command == "ack":
@@ -495,6 +508,7 @@ def _run_consume(client: MailboxHTTPClient, args: argparse.Namespace) -> dict[st
         to_address=args.to_address,
         to_addresses=tuple(_split_csv(args.to_addresses)),
         consumer_id=consumer_id,
+        serialization_scope=str(args.serialization_scope),
         lease_seconds=int(args.lease_seconds),
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         poll_interval_seconds=float(args.poll_interval_seconds),
