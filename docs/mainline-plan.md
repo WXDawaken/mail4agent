@@ -34,6 +34,7 @@
 - The first mailbox-language runtime foundation is now also implemented in the mailbox server: protocol registry rows, mailbox `accepts/default` bindings, per-thread protocol/state metadata, admin-recorded thread handoff relations, and thread inspection surfaces now exist without requiring the server to parse the textual DSL.
 - A first typed envelope execution surface now also exists above that foundation: the mailbox server can execute normalized `send` / `spawn` message envelopes plus handoff events through protocol-aware runtime validation, including mailbox-accepts checks, protocol-match checks, transition checks, payload-shape checks, and structured runtime error codes.
 - A first typed client/CLI surface now also exists above that runtime: `codex_mailbox_client.py` exposes protocol registry and typed envelope helpers, while `client.py` can now run `register-protocol`, `list-protocols`, `set-mailbox-protocols`, `get-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff` without making the user hand-write normalized admin JSON.
+- The mailbox-language protocol/runtime rules are now also factored into a shared `mailbox_language_runtime.py` module, so future stdio-interpreter work can reuse the same protocol normalization, schema validation, payload validation, and transition resolution logic instead of importing storage-layer internals.
 
 ## Milestones
 

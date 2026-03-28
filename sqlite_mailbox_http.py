@@ -38,13 +38,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from mailbox_language_runtime import MailboxRuntimeError, parse_protocol_ref
 from sqlite_mailbox import (
-    MailboxRuntimeError,
     SQLiteMailbox,
     canonicalize_address,
     normalize_claim_serialization_scope,
     normalize_address_component,
-    parse_protocol_ref,
     parse_utc_timestamp,
     split_address,
 )
