@@ -20,6 +20,8 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 - `sqlite_mailbox_admin_ui.html`: lightweight admin UI
 - `client.py`: stdio-style CLI
 - `codex_mailbox_client.py`: Python HTTP client
+- `mailbox_language_stdio.py`: mailbox-language JSONL stdio interpreter shell
+- `mailbox_language_source.py`: bounded mailbox-language parser/checker/lowerer
 - `codex_mailbox_adapter.py`: handler-oriented adapter
 - `codex_mailbox_demo_agent.py`: demo worker
 - `codex_mailbox_demo_send.py`: demo sender
@@ -296,7 +298,7 @@ python .\client.py typed-send --to-address reviewer@mail4agent.codex --from-addr
 
 The typed commands currently target the admin-backed IR/runtime surface: `register-protocol`, `list-protocols`, `set-mailbox-protocols`, `get-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff`. When both `MAILBOX_SESSION_TOKEN` and `MAILBOX_ADMIN_TOKEN` are present in the environment, these typed commands automatically prefer the admin token unless you pass an explicit `--token` or `--admin-token`.
 
-For pipe-friendly local tooling, the repo now also includes a native-stdio mailbox-language interpreter shell in `mailbox_language_stdio.py`. It currently speaks JSON lines and stays intentionally DSL-agnostic: each input line is one `{command, artifact}` request, and each output line is one structured JSON result or error.
+For pipe-friendly local tooling, the repo now also includes a native-stdio mailbox-language interpreter shell in `mailbox_language_stdio.py`. It speaks JSON lines: each input line is one `{command, artifact}` request, and each output line is one structured JSON result or error.
 
 Check and lower a protocol schema with an optional local compile cache:
 
@@ -317,7 +319,34 @@ $env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
 '@ | python .\mailbox_language_stdio.py --base-url http://127.0.0.1:8787
 ```
 
-`mailbox_language_stdio.py` currently supports `check`, `lower`, and `run` for four machine-friendly artifact kinds: `protocol_schema`, `mailbox_binding`, `message_envelope`, and `handoff_event`. It emits structured diagnostics instead of Python tracebacks, and `run` reuses the same typed admin routes and client helpers as `client.py`.
+It now also supports a first textual DSL artifact, `dsl_program`, on top of the same shell. `check` and `lower` parse source declarations and statements into typed IR, while `run` sequentially registers protocols, configures mailbox protocol bindings, and executes lowered send/spawn/handoff operations through the existing admin-backed runtime.
+
+Example `dsl_program` request:
+
+```powershell
+$env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
+@'
+{"id":"dsl-run","command":"run","artifact":{"kind":"dsl_program","from_address":"operator@mail4agent.codex","mailbox_addresses":{"support_mb":"reviewer@mail4agent.codex"},"source":"mailbox support_mb : PlainText/v1;\nlet text_t = send text to support_mb \"hello from dsl\";"}}
+'@ | python .\mailbox_language_stdio.py --base-url http://127.0.0.1:8787
+```
+
+The current DSL slice supports:
+
+- `protocol`
+- `mailbox` canonical form and shorthand
+- `send to <mailbox> using Protocol.Message`
+- `send to <thread> using Message`
+- `send text to <mailbox>`
+- `spawn ... from <thread>`
+- `handoff <thread> -> <thread>`
+
+For `dsl_program`, use:
+
+- `artifact.mailbox_addresses` to map symbolic mailbox names in source to real server mailbox addresses
+- `artifact.inputs` to supply payload variables such as `order_id` or `cart_items`
+- `artifact.from_address` to provide the sender address used by lowered send/spawn operations
+
+`mailbox_language_stdio.py` currently supports `check`, `lower`, and `run` for five artifact kinds: `protocol_schema`, `mailbox_binding`, `message_envelope`, `handoff_event`, and `dsl_program`. It emits structured diagnostics instead of Python tracebacks, and `run` reuses the same typed admin routes and client helpers as `client.py`.
 
 Reply and ack:
 
@@ -480,4 +509,4 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Rol
 - `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token
-- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; `mailbox_language_stdio.py` now provides the first native-stdio interpreter shell on top of that same contract, and the next step is source DSL parsing and lowering rather than changing the mailbox server
+- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; `mailbox_language_stdio.py` now provides both the JSONL interpreter shell and the first source-DSL lowering layer on top of that same contract, and the next step is broader syntax coverage plus stronger static diagnostics rather than changing the mailbox server

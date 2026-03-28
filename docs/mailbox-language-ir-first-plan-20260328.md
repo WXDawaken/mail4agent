@@ -189,7 +189,8 @@ Notes:
 - This interpreter should be replaceable and repo-local.
 - The mailbox server should not need to know whether a typed request came from DSL source, JSON IR, or some future UI.
 - The first bounded implementation now exists as `mailbox_language_stdio.py`: it speaks JSON lines over native stdio, supports `check` / `lower` / `run`, reuses `mailbox_language_runtime.py` plus `mailbox_language_cache.py` for static protocol compilation, and calls the same typed admin-backed runtime helpers as `client.py`.
-- The next step after this MVP is source DSL parsing and lowering, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
+- That shell now also includes a first source-DSL lowering slice through a new shared parser/checker module (`mailbox_language_source.py`). The current supported grammar is intentionally narrow but already covers `protocol`, `mailbox`, `send`, `send text`, `spawn`, and `handoff`, and it lowers those source statements into the same typed runtime artifacts rather than widening the mailbox server.
+- The next step after this MVP is broader DSL coverage, stronger source diagnostics, and richer static checking, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
 
 ## Phase 4: Full Checker and Source-Level UX
 

@@ -16,6 +16,7 @@ from mailbox_language_runtime import (
     normalize_protocol_component,
     parse_protocol_ref,
 )
+from mailbox_language_source import lower_source_program
 
 
 def main() -> None:
@@ -119,7 +120,11 @@ def _execute_request(
         return _handle_message_envelope_request(command=command, artifact=artifact, request=request, args=args)
     if artifact_kind == "handoff_event":
         return _handle_handoff_event_request(command=command, artifact=artifact, request=request, args=args)
-    raise ValueError("artifact.kind must be one of: protocol_schema, mailbox_binding, message_envelope, handoff_event")
+    if artifact_kind == "dsl_program":
+        return _handle_dsl_program_request(command=command, artifact=artifact, request=request, args=args)
+    raise ValueError(
+        "artifact.kind must be one of: protocol_schema, mailbox_binding, message_envelope, handoff_event, dsl_program"
+    )
 
 
 def _handle_protocol_schema_request(
@@ -254,6 +259,40 @@ def _handle_handoff_event_request(
     return {"artifact": lowered, "handoff": result}
 
 
+def _handle_dsl_program_request(
+    *,
+    command: str,
+    artifact: dict[str, Any],
+    request: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    source = _require_string(artifact, "source")
+    lowered = lower_source_program(
+        source,
+        mailbox_addresses=_optional_object(artifact, "mailbox_addresses"),
+        inputs=_optional_object(artifact, "inputs"),
+        from_address=_resolve_program_from_address(artifact=artifact, request=request),
+        cache_dir=str(_resolve_cache_dir(request=request, args=args)) if _resolve_cache_dir(request=request, args=args) is not None else None,
+    )
+    if command == "check":
+        return {
+            "validated": True,
+            "artifact": {
+                "kind": lowered["kind"],
+                "source_sha256": lowered["source_sha256"],
+                "protocol_count": len(lowered["protocols"]),
+                "mailbox_count": len(lowered["mailboxes"]),
+                "operation_count": len(lowered["operations"]),
+                "thread_binding_count": len(lowered["thread_bindings"]),
+            },
+        }
+    if command == "lower":
+        return {"artifact": lowered, "validated": True}
+    client = _build_admin_client(request=request, args=args)
+    run_result = _run_dsl_program(lowered=lowered, client=client)
+    return {"artifact": lowered, "run": run_result}
+
+
 def _compile_protocol_schema(
     *,
     protocol_name: str,
@@ -377,6 +416,139 @@ def _build_admin_client(*, request: dict[str, Any], args: argparse.Namespace) ->
     )
 
 
+def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> dict[str, Any]:
+    registered_protocols: list[str] = []
+    configured_mailboxes: list[str] = []
+    operation_results: list[dict[str, Any]] = []
+    thread_runtime_bindings: dict[str, dict[str, Any]] = {}
+
+    for protocol_entry in lowered["protocols"]:
+        client.register_protocol(
+            protocol=protocol_entry["protocol"],
+            schema=protocol_entry["schema"],
+        )
+        registered_protocols.append(str(protocol_entry["protocol"]))
+
+    for mailbox_entry in lowered["mailboxes"]:
+        address = mailbox_entry.get("address")
+        if not isinstance(address, str) or not address.strip():
+            raise MailboxRuntimeError(
+                "E_SOURCE_MAILBOX_ADDRESS_REQUIRED",
+                f"mailbox {mailbox_entry['mailbox']} requires an address mapping before run",
+            )
+        client.set_mailbox_protocols(
+            address=address,
+            accepts=[str(item) for item in mailbox_entry["accepts"]],
+            default_protocol=mailbox_entry.get("default_protocol"),
+        )
+        configured_mailboxes.append(str(mailbox_entry["mailbox"]))
+
+    for operation in lowered["operations"]:
+        operation_kind = str(operation["kind"])
+        if operation_kind == "message_operation":
+            artifact = operation["artifact"]
+            from_address = artifact.get("from_address")
+            if not isinstance(from_address, str) or not from_address.strip():
+                raise MailboxRuntimeError(
+                    "E_SOURCE_TYPE_INVALID",
+                    "dsl program run requires artifact.from_address for send/spawn operations",
+                )
+            protocol_name, protocol_version = parse_protocol_ref(str(artifact["protocol"]))
+            envelope: dict[str, Any] = {
+                "op": str(artifact["op"]),
+                "target_kind": str(artifact["target_kind"]),
+                "protocol": protocol_name,
+                "version": protocol_version,
+                "msg_type": str(artifact["message"]),
+                "payload": artifact["payload"],
+            }
+            if envelope["target_kind"] == "mailbox":
+                to_address = artifact.get("to_address")
+                if not isinstance(to_address, str) or not to_address.strip():
+                    raise MailboxRuntimeError(
+                        "E_SOURCE_MAILBOX_ADDRESS_REQUIRED",
+                        f"mailbox {artifact.get('mailbox')!r} requires an address mapping before run",
+                    )
+                envelope["mailbox_address"] = to_address
+                envelope["to_address"] = to_address
+                if envelope["op"] == "spawn":
+                    parent_thread_var = str(artifact["parent_thread_var"])
+                    parent_binding = thread_runtime_bindings.get(parent_thread_var)
+                    if parent_binding is None:
+                        raise MailboxRuntimeError(
+                            "E_SOURCE_REFERENCE_UNKNOWN",
+                            f"unknown runtime thread binding: {parent_thread_var}",
+                        )
+                    envelope["parent_thread_id"] = parent_binding["thread_id"]
+            else:
+                thread_var = str(artifact["thread_var"])
+                thread_binding = thread_runtime_bindings.get(thread_var)
+                if thread_binding is None:
+                    raise MailboxRuntimeError(
+                        "E_SOURCE_REFERENCE_UNKNOWN",
+                        f"unknown runtime thread binding: {thread_var}",
+                    )
+                to_address = thread_binding.get("mailbox_address") or artifact.get("to_address")
+                if not isinstance(to_address, str) or not to_address.strip():
+                    raise MailboxRuntimeError(
+                        "E_SOURCE_MAILBOX_ADDRESS_REQUIRED",
+                        f"thread {thread_var} does not have a mailbox routing address",
+                    )
+                envelope["thread_id"] = thread_binding["thread_id"]
+                envelope["to_address"] = to_address
+
+            result = client.execute_message_envelope(
+                from_address=from_address,
+                envelope=envelope,
+            )
+            bind_name = operation.get("bind")
+            if isinstance(bind_name, str) and bind_name:
+                thread_runtime_bindings[bind_name] = {
+                    "thread_id": str(result["thread_id"]),
+                    "protocol": str(result["protocol"]),
+                    "mailbox_address": str(result["mailbox_address"]),
+                    "state": str(result["state"]),
+                }
+            elif artifact["target_kind"] == "thread":
+                thread_var = str(artifact["thread_var"])
+                existing = thread_runtime_bindings.get(thread_var)
+                if existing is not None:
+                    existing["state"] = str(result["state"])
+            operation_results.append({"kind": operation_kind, "result": result})
+            continue
+
+        if operation_kind == "handoff_operation":
+            artifact = operation["artifact"]
+            from_thread_var = str(artifact["from_thread_var"])
+            to_thread_var = str(artifact["to_thread_var"])
+            from_binding = thread_runtime_bindings.get(from_thread_var)
+            to_binding = thread_runtime_bindings.get(to_thread_var)
+            if from_binding is None or to_binding is None:
+                missing = from_thread_var if from_binding is None else to_thread_var
+                raise MailboxRuntimeError(
+                    "E_SOURCE_REFERENCE_UNKNOWN",
+                    f"unknown runtime thread binding: {missing}",
+                )
+            handoff = client.execute_handoff_event(
+                event={
+                    "op": "handoff",
+                    "from_thread_id": from_binding["thread_id"],
+                    "to_thread_id": to_binding["thread_id"],
+                }
+            )
+            operation_results.append({"kind": operation_kind, "handoff": handoff})
+            continue
+
+        raise MailboxRuntimeError("E_SOURCE_TYPE_INVALID", f"unknown lowered operation kind: {operation_kind}")
+
+    return {
+        "protocols_registered": registered_protocols,
+        "mailboxes_configured": configured_mailboxes,
+        "operations": operation_results,
+        "thread_bindings": thread_runtime_bindings,
+    }
+
+
 def _resolve_base_url(*, request: dict[str, Any], args: argparse.Namespace) -> str:
     request_value = request.get("base_url")
     if isinstance(request_value, str) and request_value.strip():
@@ -387,6 +559,16 @@ def _resolve_base_url(*, request: dict[str, Any], args: argparse.Namespace) -> s
     if env_base_url:
         return env_base_url.rstrip("/")
     return DEFAULT_MAILBOX_BASE_URL
+
+
+def _resolve_program_from_address(*, artifact: dict[str, Any], request: dict[str, Any]) -> str | None:
+    artifact_value = artifact.get("from_address")
+    if isinstance(artifact_value, str) and artifact_value.strip():
+        return artifact_value.strip()
+    request_value = request.get("from_address")
+    if isinstance(request_value, str) and request_value.strip():
+        return request_value.strip()
+    return None
 
 
 def _resolve_admin_token(*, request: dict[str, Any], args: argparse.Namespace) -> str | None:
@@ -455,6 +637,15 @@ def _require_object(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key)
     if not isinstance(value, dict):
         raise ValueError(f"{key} must be a JSON object")
+    return value
+
+
+def _optional_object(data: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a JSON object when provided")
     return value
 
 

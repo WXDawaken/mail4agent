@@ -59,6 +59,36 @@ def plaintext_protocol_schema() -> dict[str, object]:
     }
 
 
+def orders_protocol_source() -> str:
+    return """
+protocol Orders/v2 {
+  state Init;
+  state AwaitDecision;
+  state Done;
+
+  start Init;
+
+  message QuoteReq {
+    order_id: String;
+    items: [OrderItem];
+  }
+
+  message Approve {
+    order_id: String;
+  }
+
+  message Cancel {
+    order_id: String;
+    reason?: String;
+  }
+
+  on QuoteReq from Init -> AwaitDecision;
+  on Approve from AwaitDecision -> Done;
+  on Cancel from Init -> Done;
+}
+"""
+
+
 def run_stdio_jsonl(
     env: dict[str, str],
     requests: list[dict[str, Any] | str],
@@ -106,6 +136,66 @@ def run_stdio_jsonl(
 
 
 class MailboxLanguageStdioTests(MailboxHTTPFeatureTestCase):
+    def test_dsl_program_check_and_lower_return_structured_artifacts(self) -> None:
+        cache_dir = self.runtime_dir / "dsl-cache"
+        env = self.base_env()
+        source = (
+            orders_protocol_source()
+            + """
+mailbox reviewer_mb : Orders/v2;
+
+let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: "123";
+  items: ["sku-1"];
+};
+
+send to review_t using Approve {
+  order_id: "123";
+};
+"""
+        )
+        responses = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-check",
+                    "command": "check",
+                    "cache_dir": str(cache_dir),
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {"reviewer_mb": REVIEWER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                },
+                {
+                    "id": "dsl-lower",
+                    "command": "lower",
+                    "cache_dir": str(cache_dir),
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {"reviewer_mb": REVIEWER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(len(responses), 2)
+        checked = responses[0]
+        self.assertTrue(checked["ok"])
+        self.assertEqual(checked["artifact"]["protocol_count"], 1)
+        self.assertEqual(checked["artifact"]["mailbox_count"], 1)
+        self.assertEqual(checked["artifact"]["operation_count"], 2)
+
+        lowered = responses[1]
+        self.assertTrue(lowered["ok"])
+        self.assertEqual(lowered["artifact"]["kind"], "dsl_program_lowered")
+        self.assertEqual(lowered["artifact"]["protocols"][0]["protocol"], "Orders/v2")
+        self.assertEqual(lowered["artifact"]["mailboxes"][0]["address"], REVIEWER_ADDRESS)
+        self.assertEqual(lowered["artifact"]["thread_bindings"]["review_t"]["state"], "Done")
+
     def test_protocol_check_and_lower_use_compile_cache(self) -> None:
         cache_dir = self.runtime_dir / "protocol-cache"
         env = self.base_env()
@@ -306,6 +396,78 @@ class MailboxLanguageStdioTests(MailboxHTTPFeatureTestCase):
         )["thread"]
         self.assertEqual(child_thread["protocol"]["protocol"], "PlainText/v1")
         self.assertEqual(child_thread["parent_thread_id"], parent_thread_id)
+
+    def test_dsl_program_run_executes_send_text_spawn_and_handoff(self) -> None:
+        env = self.admin_env()
+        source = (
+            orders_protocol_source()
+            + """
+mailbox support_mb : PlainText/v1 | Orders/v2;
+mailbox orders_mb : Orders/v2;
+
+let text_t = send text to support_mb "Please cancel order 123";
+
+let order_t = spawn to orders_mb using Orders/v2.Cancel {
+  order_id: order_id;
+  reason: "parsed from text thread";
+} from text_t;
+
+handoff text_t -> order_t;
+"""
+        )
+
+        response = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-run",
+                    "command": "run",
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {
+                            "support_mb": PLANNER_ADDRESS,
+                            "orders_mb": REVIEWER_ADDRESS,
+                        },
+                        "inputs": {"order_id": "123"},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                }
+            ],
+        )[0]
+
+        self.assertTrue(response["ok"])
+        run_result = response["run"]
+        self.assertEqual(set(run_result["protocols_registered"]), {"Orders/v2", "PlainText/v1"})
+        self.assertEqual(set(run_result["mailboxes_configured"]), {"support_mb", "orders_mb"})
+        self.assertEqual(len(run_result["operations"]), 3)
+
+        text_binding = run_result["thread_bindings"]["text_t"]
+        order_binding = run_result["thread_bindings"]["order_t"]
+        self.assertEqual(text_binding["protocol"], "PlainText/v1")
+        self.assertEqual(order_binding["protocol"], "Orders/v2")
+
+        text_thread = request_json(
+            self.base_url,
+            "GET",
+            "/admin/thread",
+            token=self.admin_token,
+            query={"thread_id": text_binding["thread_id"]},
+        )["thread"]
+        self.assertEqual(text_thread["protocol"]["protocol"], "PlainText/v1")
+        self.assertEqual(text_thread["state"], "Open")
+        self.assertEqual(len(text_thread["outgoing_handoffs"]), 1)
+
+        order_thread = request_json(
+            self.base_url,
+            "GET",
+            "/admin/thread",
+            token=self.admin_token,
+            query={"thread_id": order_binding["thread_id"]},
+        )["thread"]
+        self.assertEqual(order_thread["protocol"]["protocol"], "Orders/v2")
+        self.assertEqual(order_thread["parent_thread_id"], text_binding["thread_id"])
+        self.assertEqual(len(order_thread["incoming_handoffs"]), 1)
 
     def test_mixed_invalid_and_valid_lines_return_structured_responses(self) -> None:
         cache_dir = self.runtime_dir / "protocol-cache"
