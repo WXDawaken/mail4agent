@@ -16,8 +16,14 @@ from oncall_supervisor import (
 
 
 class FakeMailboxClient:
-    def __init__(self, deliveries: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        deliveries: list[dict[str, object]],
+        *,
+        threads_by_id: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         self._deliveries = list(deliveries)
+        self._threads_by_id = dict(threads_by_id or {})
         self.claim_calls: list[dict[str, object]] = []
         self.ack_calls: list[dict[str, object]] = []
         self.nack_calls: list[dict[str, object]] = []
@@ -76,6 +82,21 @@ class FakeMailboxClient:
 
     def heartbeat(self, *, delivery_id: int, claim_token: str, lease_seconds: int = 60) -> bool:
         return True
+
+    def get_thread(
+        self,
+        *,
+        thread_id: str | None = None,
+        message_id: str | None = None,
+        allow_missing: bool = False,
+    ) -> dict[str, object] | None:
+        if thread_id is not None:
+            payload = self._threads_by_id.get(thread_id)
+            if payload is not None:
+                return json.loads(json.dumps(payload))
+        if allow_missing:
+            return None
+        raise RuntimeError(f"thread not found: {thread_id or message_id}")
 
 
 class OncallSupervisorTests(unittest.TestCase):
@@ -167,7 +188,34 @@ class OncallSupervisorTests(unittest.TestCase):
                         "from": "planner@example.test",
                         "to": "operator@example.test",
                     }
-                ]
+                ],
+                threads_by_id={
+                    "thread-101": _build_thread_payload(
+                        thread_id="thread-101",
+                        messages=[
+                            _message(
+                                message_id="msg-101",
+                                thread_id="thread-101",
+                                from_address="planner@example.test",
+                                to_addresses=["operator@example.test"],
+                                payload={"task_id": "demo"},
+                            ),
+                            _message(
+                                message_id="reply-101",
+                                thread_id="thread-101",
+                                in_reply_to_message_id="msg-101",
+                                from_address="operator@example.test",
+                                to_addresses=["planner@example.test"],
+                                payload={
+                                    "ok": True,
+                                    "task_status": "completed",
+                                    "task_terminal": True,
+                                    "resolution_summary": "task completed in one turn",
+                                },
+                            ),
+                        ],
+                    )
+                },
             )
             config = _build_supervisor_config(runtime_dir)
             seen_delivery_ids: list[int] = []
@@ -203,6 +251,72 @@ class OncallSupervisorTests(unittest.TestCase):
             self.assertFalse(thread_registry["supports_worker_reuse"])
             self.assertFalse(thread_registry["reused_worker"])
             self.assertEqual(thread_registry["recovery_reason"], None)
+            self.assertEqual(thread_registry["task_status"], "completed")
+            self.assertTrue(thread_registry["task_terminal"])
+            self.assertEqual(thread_registry["task_status_message_id"], "reply-101")
+            self.assertEqual(thread_registry["task_resolution_summary"], "task completed in one turn")
+            self.assertEqual(saved_registry["last_task_status"], "completed")
+
+    def test_run_oncall_supervisor_infers_waiting_on_peer_from_legacy_reply_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_dir = Path(temp_dir)
+            registry = OncallRegistry.create(runtime_dir=runtime_dir, role="operator")
+            client = FakeMailboxClient(
+                [
+                    {
+                        "delivery_id": 111,
+                        "message_id": "msg-111",
+                        "thread_id": "thread-111",
+                        "claim_token": "claim-111",
+                        "from": "planner@example.test",
+                        "to": "operator@example.test",
+                    }
+                ],
+                threads_by_id={
+                    "thread-111": _build_thread_payload(
+                        thread_id="thread-111",
+                        messages=[
+                            _message(
+                                message_id="msg-111",
+                                thread_id="thread-111",
+                                from_address="planner@example.test",
+                                to_addresses=["operator@example.test"],
+                                payload={"task_id": "demo"},
+                            ),
+                            _message(
+                                message_id="reply-111",
+                                thread_id="thread-111",
+                                in_reply_to_message_id="msg-111",
+                                from_address="operator@example.test",
+                                to_addresses=["planner@example.test"],
+                                payload={
+                                    "ok": True,
+                                    "engine_request_sent": True,
+                                    "requested_engine_capability": "shared snapshot contract",
+                                },
+                            ),
+                        ],
+                    )
+                },
+            )
+
+            result = run_oncall_supervisor(
+                client,
+                _build_supervisor_config(runtime_dir),
+                registry,
+                lambda context: _record_successful_execution([], context),
+            )
+
+            thread_registry = json.loads(
+                registry.thread_registry_path(
+                    mailbox_address="operator@example.test",
+                    thread_id="thread-111",
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["task_status"], "waiting_on_peer")
+            self.assertFalse(result["task_terminal"])
+            self.assertEqual(thread_registry["task_status"], "waiting_on_peer")
+            self.assertEqual(thread_registry["task_resolution_summary"], "shared snapshot contract")
 
     def test_run_oncall_supervisor_records_failure_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -689,3 +803,32 @@ def _record_successful_execution(
             "handoff_summary": "operator completed the task",
         },
     )
+
+
+def _build_thread_payload(*, thread_id: str, messages: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "thread_id": thread_id,
+        "message_count": len(messages),
+        "messages": messages,
+    }
+
+
+def _message(
+    *,
+    message_id: str,
+    thread_id: str,
+    from_address: str,
+    to_addresses: list[str],
+    payload: dict[str, object],
+    in_reply_to_message_id: str | None = None,
+    created_at: str = "2026-03-28T00:00:01Z",
+) -> dict[str, object]:
+    return {
+        "message_id": message_id,
+        "thread_id": thread_id,
+        "in_reply_to_message_id": in_reply_to_message_id,
+        "payload": payload,
+        "created_at": created_at,
+        "from": from_address,
+        "to": list(to_addresses),
+    }

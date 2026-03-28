@@ -43,6 +43,7 @@
 - A new shared source parser/checker module, `mailbox_language_source.py`, now lowers a first bounded textual DSL slice into typed runtime artifacts. The current supported source grammar covers `protocol`, `mailbox`, bounded `let` bindings, nested object values, `send`, `send text`, `spawn`, and `handoff`, still keeps mailbox-address resolution and runtime truth outside the parser layer, and now also rejects bounded primitive/list payload type mismatches plus `let` annotation mismatches during `check` / `lower` instead of waiting for live runtime execution.
 - That same DSL layer now also emits bounded source diagnostics: `MailboxRuntimeError` carries optional details, `mailbox_language_source.py` annotates parse/check failures with `source_phase` plus line/column metadata, and `mailbox_language_stdio.py` forwards those fields in structured JSON responses so editor or pipe consumers can distinguish parse vs checker failures without scraping the error string.
 - The current mailbox-language product decision is now explicit: JSON IR plus protocol/runtime schema artifacts are the primary backend surface, while the textual DSL stays as an optional frontend that lowers into that same contract. Simple mailbox communication should not require DSL orchestration.
+- The next bounded oncall observability step is explicit task-progress tracking: replies should carry machine-readable `task_status`, and oncall registry inspection should prefer those explicit mailbox-native state transitions over heuristics based on thread silence.
 
 ## Milestones
 

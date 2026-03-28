@@ -96,6 +96,7 @@ class OncallRegistry:
             status="succeeded",
             last_delivery_id=_optional_int(summary, "last_delivery_id"),
             last_thread_id=_optional_str(summary, "last_thread_id"),
+            last_task_status=_optional_str(summary, "task_status"),
         )
         _write_json_file(self.registry_path, payload)
         return payload
@@ -109,6 +110,7 @@ class OncallRegistry:
             status="failed",
             last_delivery_id=_optional_int(summary, "last_delivery_id"),
             last_thread_id=_optional_str(summary, "last_thread_id"),
+            last_task_status=_optional_str(summary, "task_status"),
         )
         _write_json_file(self.registry_path, payload)
         return payload
@@ -212,6 +214,14 @@ class OncallRegistry:
             "recovered_last_processed_message_id": _optional_str(summary, "recovered_last_processed_message_id"),
             "recovered_previous_worker_id": _optional_str(summary, "recovered_previous_worker_id"),
             "reasoning_effort": _optional_str(summary, "reasoning_effort"),
+            "task_status": _optional_str(summary, "task_status"),
+            "task_terminal": _optional_bool(summary, "task_terminal"),
+            "task_waiting_on_address": _optional_str(summary, "task_waiting_on_address"),
+            "task_status_message_id": _optional_str(summary, "task_status_message_id"),
+            "task_status_updated_at": _optional_str(summary, "task_status_updated_at"),
+            "task_status_source": _optional_str(summary, "task_status_source"),
+            "task_resolution_summary": _bounded_optional_str(summary, "task_resolution_summary"),
+            "task_status_lookup_error": _bounded_optional_str(summary, "task_status_lookup_error"),
         }
         bindings_by_workspace = _load_workspace_bindings(existing_payload)
         workspace_binding = _build_workspace_binding_payload(payload)
@@ -232,6 +242,7 @@ class OncallRegistry:
         status: str,
         last_delivery_id: int | None,
         last_thread_id: str | None,
+        last_task_status: str | None = None,
     ) -> dict[str, Any]:
         return {
             "role": self.role,
@@ -240,6 +251,7 @@ class OncallRegistry:
             "last_run_path": str(self.summary_path),
             "last_delivery_id": last_delivery_id,
             "last_thread_id": last_thread_id,
+            "last_task_status": last_task_status,
             "started_at": started_at,
             "completed_at": completed_at,
             "status": status,
@@ -315,6 +327,14 @@ def _build_workspace_binding_payload(payload: dict[str, Any]) -> dict[str, Any] 
         "recovered_last_processed_message_id": _optional_str(payload, "recovered_last_processed_message_id"),
         "recovered_previous_worker_id": _optional_str(payload, "recovered_previous_worker_id"),
         "reasoning_effort": _optional_str(payload, "reasoning_effort"),
+        "task_status": _optional_str(payload, "task_status"),
+        "task_terminal": _optional_bool(payload, "task_terminal"),
+        "task_waiting_on_address": _optional_str(payload, "task_waiting_on_address"),
+        "task_status_message_id": _optional_str(payload, "task_status_message_id"),
+        "task_status_updated_at": _optional_str(payload, "task_status_updated_at"),
+        "task_status_source": _optional_str(payload, "task_status_source"),
+        "task_resolution_summary": _bounded_optional_str(payload, "task_resolution_summary"),
+        "task_status_lookup_error": _bounded_optional_str(payload, "task_status_lookup_error"),
     }
 
 

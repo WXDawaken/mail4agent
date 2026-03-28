@@ -106,9 +106,14 @@ def run_oncall_supervisor(
                 existing_thread_state=existing_thread_state,
             )
         )
+        task_tracking_metadata = _load_task_tracking_metadata(
+            client=client,
+            delivery=delivery,
+        )
         last_execution_metadata = {
             **dict(config.execution_metadata),
             **dict(execution_result.metadata),
+            **task_tracking_metadata,
         }
         last_thread_assignment = _merge_thread_assignment_with_execution_metadata(
             thread_assignment=last_thread_assignment,
@@ -508,6 +513,142 @@ def _worker_binding_key(*, mailbox_address: str, thread_id: str, workspace_dir: 
 
 def _workspace_key(workspace_dir: str) -> str:
     return workspace_dir.strip().replace("\\", "/").lower()
+
+
+def _load_task_tracking_metadata(
+    *,
+    client: MailboxHTTPClient,
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
+    thread_id = _optional_str(delivery.get("thread_id"))
+    if thread_id is None:
+        return {}
+    try:
+        thread_payload = client.get_thread(thread_id=thread_id, allow_missing=True)
+    except Exception as exc:
+        return {"task_status_lookup_error": str(exc)}
+    if not isinstance(thread_payload, dict):
+        return {}
+    messages = thread_payload.get("messages")
+    if not isinstance(messages, list):
+        return {}
+    reply_message = _find_claim_reply_message(messages=messages, delivery=delivery)
+    if reply_message is None:
+        return {}
+    payload = reply_message.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    task_status = _derive_task_status(payload)
+    if task_status is None:
+        return {}
+    waiting_on_address = _payload_str(payload, "waiting_on_address") or _payload_str(payload, "waiting_on")
+    task_terminal = _payload_bool(payload, "task_terminal")
+    if task_terminal is None:
+        task_terminal = task_status in {"completed", "deferred", "cancelled"}
+    task_summary = (
+        _payload_str(payload, "resolution_summary")
+        or _payload_str(payload, "reason")
+        or _payload_str(payload, "requested_engine_capability")
+    )
+    metadata: dict[str, Any] = {
+        "task_status": task_status,
+        "task_terminal": task_terminal,
+        "task_status_message_id": _optional_str(reply_message.get("message_id")),
+        "task_status_updated_at": _optional_str(reply_message.get("created_at")),
+        "task_status_source": "reply_payload",
+    }
+    if waiting_on_address is not None:
+        metadata["task_waiting_on_address"] = waiting_on_address
+    if task_summary is not None:
+        metadata["task_resolution_summary"] = task_summary
+    return metadata
+
+
+def _find_claim_reply_message(
+    *,
+    messages: list[Any],
+    delivery: dict[str, Any],
+) -> dict[str, Any] | None:
+    claimed_message_id = _optional_str(delivery.get("message_id"))
+    claimed_from = _optional_str(delivery.get("from"))
+    claimed_to = _optional_str(delivery.get("to"))
+    if claimed_message_id is None or claimed_from is None or claimed_to is None:
+        return None
+    candidates: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if _optional_str(item.get("from")) != claimed_to:
+            continue
+        if _optional_str(item.get("in_reply_to_message_id")) != claimed_message_id:
+            continue
+        recipients = item.get("to")
+        if not isinstance(recipients, list) or claimed_from not in recipients:
+            continue
+        candidates.append(item)
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            _optional_str(item.get("created_at")) or "",
+            _optional_str(item.get("message_id")) or "",
+        )
+    )
+    return candidates[-1]
+
+
+def _derive_task_status(payload: dict[str, Any]) -> str | None:
+    explicit = _normalize_task_status(_payload_str(payload, "task_status"))
+    if explicit is not None:
+        return explicit
+    if payload.get("deferred") is True:
+        return "deferred"
+    if payload.get("engine_request_sent") is True:
+        return "waiting_on_peer"
+    if payload.get("ok") is True:
+        return "completed"
+    return None
+
+
+def _normalize_task_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "done": "completed",
+        "resolved": "completed",
+        "waiting": "in_progress",
+        "waiting_on_engine": "waiting_on_peer",
+        "waiting_on_teammate": "waiting_on_peer",
+        "needs_requester": "waiting_on_requester",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {
+        "in_progress",
+        "waiting_on_peer",
+        "waiting_on_requester",
+        "blocked",
+        "completed",
+        "deferred",
+        "cancelled",
+    }:
+        return normalized
+    return None
+
+
+def _payload_str(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _payload_bool(payload: dict[str, Any], key: str) -> bool | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _utc_now() -> str:
