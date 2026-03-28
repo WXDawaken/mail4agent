@@ -10,8 +10,9 @@ COMPILED_PROTOCOL_MESSAGE_KIND = "mailbox_language_compiled_protocol_message"
 
 
 class MailboxRuntimeError(RuntimeError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None):
         self.code = str(code)
+        self.details = dict(details or {})
         super().__init__(message)
 
 

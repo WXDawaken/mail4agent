@@ -44,6 +44,14 @@ class Token:
 
 
 @dataclass(frozen=True)
+class SourceSpan:
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+
+
+@dataclass(frozen=True)
 class FieldDecl:
     name: str
     optional: bool
@@ -71,6 +79,7 @@ class ProtocolDecl:
     start_state: str
     messages: tuple[MessageDecl, ...]
     transitions: tuple[TransitionDecl, ...]
+    span: SourceSpan
     is_builtin: bool = False
 
     @property
@@ -83,12 +92,14 @@ class MailboxDecl:
     name: str
     accepts: tuple[str, ...]
     default_protocol: str | None
+    span: SourceSpan
     is_shorthand: bool = False
 
 
 @dataclass(frozen=True)
 class ThreadRef:
     name: str
+    span: SourceSpan
     explicit_thread_handle: bool = False
 
 
@@ -96,6 +107,7 @@ class ThreadRef:
 class MessageRef:
     protocol_ref: str | None
     message_name: str
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
@@ -103,6 +115,7 @@ class LetStatement:
     name: str
     declared_type_text: str | None
     expr: "StatementExpr"
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
@@ -110,12 +123,16 @@ class SendStatement:
     target: ThreadRef
     message_ref: MessageRef
     payload: dict[str, Any]
+    payload_spans: dict[str, SourceSpan]
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
 class SendTextStatement:
     mailbox_name: str
     payload: dict[str, Any]
+    payload_spans: dict[str, SourceSpan]
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
@@ -123,23 +140,28 @@ class SpawnStatement:
     mailbox_name: str
     message_ref: MessageRef
     payload: dict[str, Any]
+    payload_spans: dict[str, SourceSpan]
     from_thread: ThreadRef
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
 class HandoffStatement:
     from_thread: ThreadRef
     to_thread: ThreadRef
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
 class ValueExpr:
     value: Any
+    span: SourceSpan
 
 
 @dataclass(frozen=True)
 class VarRef:
     name: str
+    span: SourceSpan
 
 
 StatementExpr = SendStatement | SendTextStatement | SpawnStatement | ValueExpr
@@ -151,6 +173,59 @@ class SourceProgram:
     protocols: tuple[ProtocolDecl, ...]
     mailboxes: tuple[MailboxDecl, ...]
     statements: tuple[Statement, ...]
+
+
+def _token_span(token: Token) -> SourceSpan:
+    end_column = token.column + max(len(token.text), 1)
+    return SourceSpan(
+        line=token.line,
+        column=token.column,
+        end_line=token.line,
+        end_column=end_column,
+    )
+
+
+def _error_details_for_source(*, phase: str, span: SourceSpan | None) -> dict[str, Any]:
+    details: dict[str, Any] = {"source_phase": phase}
+    if span is not None:
+        details.update(
+            {
+                "source_line": span.line,
+                "source_column": span.column,
+                "source_end_line": span.end_line,
+                "source_end_column": span.end_column,
+            }
+        )
+    return details
+
+
+def _raise_source_error(
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    span: SourceSpan | None = None,
+) -> None:
+    raise MailboxRuntimeError(
+        code,
+        message,
+        details=_error_details_for_source(phase=phase, span=span),
+    )
+
+
+def _raise_source_error_at_token(
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    token: Token,
+) -> None:
+    _raise_source_error(
+        code,
+        message,
+        phase=phase,
+        span=_token_span(token),
+    )
 
 
 class _Parser:
@@ -173,6 +248,7 @@ class _Parser:
         return SourceProgram(tuple(protocols), tuple(mailboxes), tuple(statements))
 
     def _parse_protocol_decl(self) -> ProtocolDecl:
+        start_token = self._peek()
         is_builtin = self._match_keyword("builtin")
         self._expect_keyword("protocol")
         protocol_name, protocol_version = self._parse_protocol_ref()
@@ -199,14 +275,18 @@ class _Parser:
                 transitions.append(self._parse_transition_decl())
                 continue
             token = self._peek()
-            raise MailboxRuntimeError(
+            _raise_source_error_at_token(
                 "E_SOURCE_PARSE_INVALID",
                 f"unexpected token in protocol declaration at {token.line}:{token.column}: {token.text!r}",
+                phase="parse",
+                token=token,
             )
         if start_state is None:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"protocol {format_protocol_ref(protocol_name, protocol_version)} is missing a start state",
+                phase="check",
+                span=_token_span(start_token),
             )
         return ProtocolDecl(
             protocol_name=protocol_name,
@@ -215,6 +295,12 @@ class _Parser:
             start_state=start_state,
             messages=tuple(messages),
             transitions=tuple(transitions),
+            span=SourceSpan(
+                line=start_token.line,
+                column=start_token.column,
+                end_line=self._previous().line,
+                end_column=self._previous().column + max(len(self._previous().text), 1),
+            ),
             is_builtin=is_builtin,
         )
 
@@ -232,9 +318,11 @@ class _Parser:
             while True:
                 token = self._peek()
                 if token.kind == "EOF":
-                    raise MailboxRuntimeError(
+                    _raise_source_error(
                         "E_SOURCE_PARSE_INVALID",
                         f"unterminated field declaration for {message_name}",
+                        phase="parse",
+                        span=_token_span(token),
                     )
                 if token.text == ";" and depth == 0:
                     break
@@ -258,6 +346,7 @@ class _Parser:
         return TransitionDecl(message, from_state, to_state)
 
     def _parse_mailbox_decl(self) -> MailboxDecl:
+        start_token = self._peek()
         self._expect_keyword("mailbox")
         name = self._expect_identifier("mailbox name")
         if self._match(":"):
@@ -266,7 +355,18 @@ class _Parser:
                 accepts.append(self._format_protocol_ref(self._parse_protocol_ref()))
             self._expect(";")
             default_protocol = accepts[0] if accepts[0].startswith("PlainText/") else None
-            return MailboxDecl(name, tuple(accepts), default_protocol, True)
+            return MailboxDecl(
+                name,
+                tuple(accepts),
+                default_protocol,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+                True,
+            )
 
         self._expect("{")
         accepts: list[str] = []
@@ -287,15 +387,28 @@ class _Parser:
                 self._expect(";")
                 continue
             token = self._peek()
-            raise MailboxRuntimeError(
+            _raise_source_error_at_token(
                 "E_SOURCE_PARSE_INVALID",
                 f"unexpected token in mailbox declaration at {token.line}:{token.column}: {token.text!r}",
+                phase="parse",
+                token=token,
             )
-        return MailboxDecl(name, tuple(accepts), default_protocol, False)
+        return MailboxDecl(
+            name,
+            tuple(accepts),
+            default_protocol,
+            SourceSpan(
+                line=start_token.line,
+                column=start_token.column,
+                end_line=self._previous().line,
+                end_column=self._previous().column + max(len(self._previous().text), 1),
+            ),
+            False,
+        )
 
     def _parse_statement(self) -> Statement:
         if self._peek_keyword("let"):
-            self._advance()
+            start_token = self._advance()
             name = self._expect_identifier("binding name")
             declared_type_text: str | None = None
             if self._match(":"):
@@ -304,74 +417,150 @@ class _Parser:
                 self._expect("=")
             expr = self._parse_statement_expr()
             self._expect(";")
-            return LetStatement(name, declared_type_text, expr)
+            return LetStatement(
+                name,
+                declared_type_text,
+                expr,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+            )
 
         if self._peek_keyword("handoff"):
-            self._advance()
+            start_token = self._advance()
             from_thread = self._parse_thread_ref()
             self._expect("->")
             to_thread = self._parse_thread_ref()
             self._expect(";")
-            return HandoffStatement(from_thread, to_thread)
+            return HandoffStatement(
+                from_thread,
+                to_thread,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+            )
 
         expr = self._parse_statement_expr()
         if isinstance(expr, ValueExpr):
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_PARSE_INVALID",
                 "bare value expressions are not valid statements; use let <name> = ...;",
+                phase="parse",
+                span=expr.span,
             )
         self._expect(";")
         return expr
 
     def _parse_statement_expr(self) -> StatementExpr:
         if self._peek_keyword("send"):
-            self._advance()
+            start_token = self._advance()
             if self._match_keyword("text"):
                 self._expect_keyword("to")
                 mailbox_name = self._expect_identifier("mailbox name")
-                payload = {"body": self._parse_literal_value()} if self._peek().kind == "STRING" else self._parse_payload_block()
-                return SendTextStatement(mailbox_name, payload)
+                if self._peek().kind == "STRING":
+                    body_token = self._peek()
+                    payload = {"body": self._parse_literal_value()}
+                    payload_spans = {"body": _token_span(body_token)}
+                else:
+                    payload, payload_spans = self._parse_payload_block()
+                return SendTextStatement(
+                    mailbox_name,
+                    payload,
+                    payload_spans,
+                    SourceSpan(
+                        line=start_token.line,
+                        column=start_token.column,
+                        end_line=self._previous().line,
+                        end_column=self._previous().column + max(len(self._previous().text), 1),
+                    ),
+                )
             self._expect_keyword("to")
             target = self._parse_thread_ref()
             self._expect_keyword("using")
             message_ref = self._parse_message_ref()
-            payload = self._parse_payload_block()
-            return SendStatement(target, message_ref, payload)
+            payload, payload_spans = self._parse_payload_block()
+            return SendStatement(
+                target,
+                message_ref,
+                payload,
+                payload_spans,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+            )
 
         if self._peek_keyword("spawn"):
-            self._advance()
+            start_token = self._advance()
             self._expect_keyword("to")
             mailbox_name = self._expect_identifier("mailbox name")
             self._expect_keyword("using")
             message_ref = self._parse_message_ref()
-            payload = self._parse_payload_block()
+            payload, payload_spans = self._parse_payload_block()
             self._expect_keyword("from")
             from_thread = self._parse_thread_ref()
-            return SpawnStatement(mailbox_name, message_ref, payload, from_thread)
+            return SpawnStatement(
+                mailbox_name,
+                message_ref,
+                payload,
+                payload_spans,
+                from_thread,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+            )
 
         token = self._peek()
         if token.kind in {"STRING", "NUMBER", "IDENT"} or token.text in {"[", "{"}:
-            return ValueExpr(self._parse_value())
+            return ValueExpr(self._parse_value(), _token_span(token))
 
         token = self._peek()
-        raise MailboxRuntimeError(
+        _raise_source_error_at_token(
             "E_SOURCE_PARSE_INVALID",
             f"unexpected statement token at {token.line}:{token.column}: {token.text!r}",
+            phase="parse",
+            token=token,
         )
 
     def _parse_thread_ref(self) -> ThreadRef:
+        start_token = self._peek()
         explicit_thread_handle = self._match("#")
         name = self._expect_identifier("thread or mailbox reference")
-        return ThreadRef(name, explicit_thread_handle)
+        return ThreadRef(
+            name,
+            _token_span(start_token),
+            explicit_thread_handle,
+        )
 
     def _parse_message_ref(self) -> MessageRef:
+        start_token = self._peek()
         first = self._expect_identifier("message or protocol name")
         if self._match("/"):
             protocol_version = self._parse_protocol_version()
             self._expect(".")
             message_name = self._expect_identifier("message name")
-            return MessageRef(format_protocol_ref(first, protocol_version), message_name)
-        return MessageRef(None, first)
+            return MessageRef(
+                format_protocol_ref(first, protocol_version),
+                message_name,
+                SourceSpan(
+                    line=start_token.line,
+                    column=start_token.column,
+                    end_line=self._previous().line,
+                    end_column=self._previous().column + max(len(self._previous().text), 1),
+                ),
+            )
+        return MessageRef(None, first, _token_span(start_token))
 
     def _parse_protocol_ref(self) -> tuple[str, str]:
         protocol_name = self._expect_identifier("protocol name")
@@ -385,20 +574,25 @@ class _Parser:
             return normalize_protocol_component(token.text, "protocol_version")
         if token.kind == "STRING":
             return normalize_protocol_component(json.loads(token.text), "protocol_version")
-        raise MailboxRuntimeError(
+        _raise_source_error_at_token(
             "E_SOURCE_PARSE_INVALID",
             f"invalid protocol version token at {token.line}:{token.column}: {token.text!r}",
+            phase="parse",
+            token=token,
         )
 
-    def _parse_payload_block(self) -> dict[str, Any]:
+    def _parse_payload_block(self) -> tuple[dict[str, Any], dict[str, SourceSpan]]:
         self._expect("{")
         payload: dict[str, Any] = {}
+        payload_spans: dict[str, SourceSpan] = {}
         while not self._match("}"):
+            field_token = self._peek()
             field_name = self._expect_identifier("payload field")
             self._expect(":")
             payload[field_name] = self._parse_value()
+            payload_spans[field_name] = _token_span(field_token)
             self._expect(";")
-        return payload
+        return payload, payload_spans
 
     def _parse_value(self) -> Any:
         token = self._peek()
@@ -431,10 +625,12 @@ class _Parser:
                 return False
             if token.text == "null":
                 return None
-            return VarRef(token.text)
-        raise MailboxRuntimeError(
+            return VarRef(token.text, _token_span(token))
+        _raise_source_error_at_token(
             "E_SOURCE_PARSE_INVALID",
             f"unexpected value token at {token.line}:{token.column}: {token.text!r}",
+            phase="parse",
+            token=token,
         )
 
     def _parse_literal_value(self) -> Any:
@@ -443,9 +639,11 @@ class _Parser:
             return json.loads(token.text)
         if token.kind == "NUMBER":
             return float(token.text) if "." in token.text else int(token.text)
-        raise MailboxRuntimeError(
+        _raise_source_error_at_token(
             "E_SOURCE_PARSE_INVALID",
             f"expected literal value, got {token.text!r}",
+            phase="parse",
+            token=token,
         )
 
     def _format_protocol_ref(self, protocol_parts: tuple[str, str]) -> str:
@@ -458,15 +656,19 @@ class _Parser:
         while True:
             token = self._peek()
             if token.kind == "EOF":
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_PARSE_INVALID",
                     f"unterminated type annotation before {terminator!r}",
+                    phase="parse",
+                    span=_token_span(token),
                 )
             if token.text == terminator and angle_depth == 0 and bracket_depth == 0:
                 if not type_tokens:
-                    raise MailboxRuntimeError(
+                    _raise_source_error(
                         "E_SOURCE_PARSE_INVALID",
                         "empty type annotation is not allowed",
+                        phase="parse",
+                        span=_token_span(token),
                     )
                 self._advance()
                 return "".join(type_tokens).strip()
@@ -479,18 +681,22 @@ class _Parser:
             elif token.text == "]":
                 bracket_depth -= 1
             if angle_depth < 0 or bracket_depth < 0:
-                raise MailboxRuntimeError(
+                _raise_source_error_at_token(
                     "E_SOURCE_PARSE_INVALID",
                     f"malformed type annotation near {token.text!r}",
+                    phase="parse",
+                    token=token,
                 )
             type_tokens.append(self._advance().text)
 
     def _expect_identifier(self, label: str) -> str:
         token = self._advance()
         if token.kind != "IDENT":
-            raise MailboxRuntimeError(
+            _raise_source_error_at_token(
                 "E_SOURCE_PARSE_INVALID",
                 f"expected {label} at {token.line}:{token.column}, got {token.text!r}",
+                phase="parse",
+                token=token,
             )
         return normalize_protocol_component(token.text, label.replace(" ", "_"))
 
@@ -503,6 +709,12 @@ class _Parser:
             self._index += 1
         return token
 
+    def _previous(self) -> Token:
+        if self._index <= 0:
+            return self._tokens[0]
+        previous_index = min(self._index - 1, len(self._tokens) - 1)
+        return self._tokens[previous_index]
+
     def _match(self, expected: str) -> bool:
         token = self._peek()
         if token.text != expected:
@@ -513,9 +725,11 @@ class _Parser:
     def _expect(self, expected: str) -> None:
         token = self._advance()
         if token.text != expected:
-            raise MailboxRuntimeError(
+            _raise_source_error_at_token(
                 "E_SOURCE_PARSE_INVALID",
                 f"expected {expected!r} at {token.line}:{token.column}, got {token.text!r}",
+                phase="parse",
+                token=token,
             )
 
     def _peek_keyword(self, keyword: str) -> bool:
@@ -531,9 +745,11 @@ class _Parser:
     def _expect_keyword(self, keyword: str) -> None:
         token = self._advance()
         if token.kind != "IDENT" or token.text != keyword:
-            raise MailboxRuntimeError(
+            _raise_source_error_at_token(
                 "E_SOURCE_PARSE_INVALID",
                 f"expected keyword {keyword!r} at {token.line}:{token.column}, got {token.text!r}",
+                phase="parse",
+                token=token,
             )
 
     def _at_end(self) -> bool:
@@ -590,9 +806,11 @@ def _build_protocol_entries(program: SourceProgram, *, cache_dir: str | None) ->
     protocol_decls: dict[str, ProtocolDecl] = {}
     for decl in program.protocols:
         if decl.protocol_ref in protocol_decls:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"duplicate protocol declaration: {decl.protocol_ref}",
+                phase="check",
+                span=decl.span,
             )
         protocol_decls[decl.protocol_ref] = decl
 
@@ -616,6 +834,7 @@ def _build_protocol_entries(program: SourceProgram, *, cache_dir: str | None) ->
                 ),
             ),
             transitions=(TransitionDecl("Text", "Open", "Open"),),
+            span=SourceSpan(0, 0, 0, 0),
             is_builtin=True,
         )
 
@@ -668,52 +887,68 @@ def _build_mailbox_entries(
     seen_mailboxes: set[str] = set()
     for decl in program.mailboxes:
         if decl.name in seen_mailboxes:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"duplicate mailbox declaration: {decl.name}",
+                phase="check",
+                span=decl.span,
             )
         seen_mailboxes.add(decl.name)
         if not decl.accepts:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"mailbox {decl.name} must declare at least one accepted protocol",
+                phase="check",
+                span=decl.span,
             )
         accepts: list[str] = []
         plain_text_refs: list[str] = []
         for protocol_ref in decl.accepts:
             if protocol_ref not in protocol_schemas:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_DECLARATION_INVALID",
                     f"mailbox {decl.name} references unknown protocol {protocol_ref}",
+                    phase="check",
+                    span=decl.span,
                 )
             if protocol_ref in accepts:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_DECLARATION_INVALID",
                     f"mailbox {decl.name} repeats accepted protocol {protocol_ref}",
+                    phase="check",
+                    span=decl.span,
                 )
             accepts.append(protocol_ref)
             if protocol_ref.startswith("PlainText/"):
                 plain_text_refs.append(protocol_ref)
         if len(plain_text_refs) > 1:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"mailbox {decl.name} accepts more than one PlainText version",
+                phase="check",
+                span=decl.span,
             )
         if decl.default_protocol is not None:
             if decl.default_protocol not in accepts:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_DECLARATION_INVALID",
                     f"mailbox {decl.name} default protocol must appear in accepts",
+                    phase="check",
+                    span=decl.span,
                 )
             if not decl.default_protocol.startswith("PlainText/"):
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_DECLARATION_INVALID",
                     f"mailbox {decl.name} default protocol must be PlainText/* in v0",
+                    phase="check",
+                    span=decl.span,
                 )
         if decl.is_shorthand and len(accepts) > 1 and not accepts[0].startswith("PlainText/"):
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_DECLARATION_INVALID",
                 f"mailbox shorthand for {decl.name} must start with PlainText/* when accepting multiple protocols",
+                phase="check",
+                span=decl.span,
             )
         mailbox_entries.append(
             {
@@ -747,17 +982,21 @@ def _lower_statements(
             bind_name = statement.name
             declared_type_text = statement.declared_type_text
             if bind_name in thread_env or bind_name in value_env:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_DECLARATION_INVALID",
                     f"binding {bind_name} is already defined",
+                    phase="check",
+                    span=statement.span,
                 )
             expr = statement.expr
 
         if isinstance(expr, ValueExpr):
             if bind_name is None:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_TYPE_INVALID",
                     "value expressions must be bound with let in the first DSL slice",
+                    phase="check",
+                    span=expr.span,
                 )
             alias_source_name: str | None = None
             if isinstance(expr.value, VarRef) and expr.value.name in thread_env:
@@ -773,6 +1012,7 @@ def _lower_statements(
                     binding_name=bind_name,
                     declared_type_text=declared_type_text,
                     protocol_ref=binding_value.protocol_ref,
+                    span=statement.span if isinstance(statement, LetStatement) else expr.span,
                 )
                 thread_env[bind_name] = binding_value
                 if alias_source_name is not None:
@@ -782,13 +1022,14 @@ def _lower_statements(
                 binding_name=bind_name,
                 declared_type_text=declared_type_text,
                 value=binding_value,
+                span=statement.span if isinstance(statement, LetStatement) else expr.span,
             )
             value_env[bind_name] = binding_value
             continue
 
         if isinstance(expr, SendTextStatement):
-            mailbox_entry = _require_mailbox(mailbox_table, expr.mailbox_name)
-            protocol_ref = _resolve_plaintext_protocol_for_mailbox(mailbox_entry)
+            mailbox_entry = _require_mailbox(mailbox_table, expr.mailbox_name, span=expr.span)
+            protocol_ref = _resolve_plaintext_protocol_for_mailbox(mailbox_entry, span=expr.span)
             payload = _resolve_payload(
                 expr.payload,
                 value_env=value_env,
@@ -801,6 +1042,8 @@ def _lower_statements(
                 schema=schema,
                 msg_type="Text",
                 payload=payload,
+                payload_spans=expr.payload_spans,
+                fallback_span=expr.span,
             )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
@@ -830,6 +1073,7 @@ def _lower_statements(
                     binding_name=bind_name,
                     declared_type_text=declared_type_text,
                     protocol_ref=protocol_ref,
+                    span=statement.span if isinstance(statement, LetStatement) else expr.span,
                 )
                 thread_env[bind_name] = _StaticThreadBinding(
                     protocol_ref=protocol_ref,
@@ -841,17 +1085,24 @@ def _lower_statements(
 
         if isinstance(expr, SendStatement):
             if expr.target.explicit_thread_handle:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_TYPE_INVALID",
                     f"explicit thread handles like #{expr.target.name} are not supported in the first DSL slice",
+                    phase="check",
+                    span=expr.target.span,
                 )
             if expr.target.name in mailbox_table:
-                protocol_ref = _require_qualified_message_ref(expr.message_ref, context=f"mailbox {expr.target.name}")
+                protocol_ref = _require_qualified_message_ref(
+                    expr.message_ref,
+                    context=f"mailbox {expr.target.name}",
+                )
                 mailbox_entry = mailbox_table[expr.target.name]
                 if protocol_ref not in mailbox_entry["accepts"]:
-                    raise MailboxRuntimeError(
+                    _raise_source_error(
                         "E_MAILBOX_PROTOCOL_NOT_ACCEPTED",
                         f"mailbox {expr.target.name} does not accept {protocol_ref}",
+                        phase="check",
+                        span=expr.message_ref.span,
                     )
                 payload = _resolve_payload(
                     expr.payload,
@@ -866,6 +1117,8 @@ def _lower_statements(
                     schema=schema,
                     msg_type=msg_type,
                     payload=payload,
+                    payload_spans=expr.payload_spans,
+                    fallback_span=expr.span,
                 )
                 next_state = resolve_transition_target_state(
                     protocol_ref=protocol_ref,
@@ -895,6 +1148,7 @@ def _lower_statements(
                         binding_name=bind_name,
                         declared_type_text=declared_type_text,
                         protocol_ref=protocol_ref,
+                        span=statement.span if isinstance(statement, LetStatement) else expr.span,
                     )
                     thread_env[bind_name] = _StaticThreadBinding(
                         protocol_ref=protocol_ref,
@@ -904,17 +1158,21 @@ def _lower_statements(
                     )
                 continue
 
-            thread_binding = _require_thread_binding(thread_env, expr.target.name)
+            thread_binding = _require_thread_binding(thread_env, expr.target.name, span=expr.target.span)
             if bind_name is not None:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_TYPE_INVALID",
                     "send to an existing thread returns unit and cannot be bound with let in the first DSL slice",
+                    phase="check",
+                    span=statement.span if isinstance(statement, LetStatement) else expr.span,
                 )
             protocol_ref = _resolve_thread_message_protocol(expr.message_ref, thread_binding.protocol_ref)
             if protocol_ref != thread_binding.protocol_ref:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_THREAD_PROTOCOL_MISMATCH",
                     f"thread {expr.target.name} is bound to {thread_binding.protocol_ref}, not {protocol_ref}",
+                    phase="check",
+                    span=expr.message_ref.span,
                 )
             payload = _resolve_payload(
                 expr.payload,
@@ -929,6 +1187,8 @@ def _lower_statements(
                 schema=schema,
                 msg_type=msg_type,
                 payload=payload,
+                payload_spans=expr.payload_spans,
+                fallback_span=expr.span,
             )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
@@ -959,20 +1219,29 @@ def _lower_statements(
 
         if isinstance(expr, SpawnStatement):
             if bind_name is None:
-                raise MailboxRuntimeError("E_SOURCE_TYPE_INVALID", "spawn expressions must be bound with let in the first DSL slice")
+                _raise_source_error(
+                    "E_SOURCE_TYPE_INVALID",
+                    "spawn expressions must be bound with let in the first DSL slice",
+                    phase="check",
+                    span=expr.span,
+                )
             if expr.from_thread.explicit_thread_handle:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_TYPE_INVALID",
                     f"explicit thread handles like #{expr.from_thread.name} are not supported in the first DSL slice",
+                    phase="check",
+                    span=expr.from_thread.span,
                 )
-            mailbox_entry = _require_mailbox(mailbox_table, expr.mailbox_name)
+            mailbox_entry = _require_mailbox(mailbox_table, expr.mailbox_name, span=expr.span)
             protocol_ref = _require_qualified_message_ref(expr.message_ref, context=f"mailbox {expr.mailbox_name}")
             if protocol_ref not in mailbox_entry["accepts"]:
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_MAILBOX_PROTOCOL_NOT_ACCEPTED",
                     f"mailbox {expr.mailbox_name} does not accept {protocol_ref}",
+                    phase="check",
+                    span=expr.message_ref.span,
                 )
-            parent_binding = _require_thread_binding(thread_env, expr.from_thread.name)
+            parent_binding = _require_thread_binding(thread_env, expr.from_thread.name, span=expr.from_thread.span)
             payload = _resolve_payload(
                 expr.payload,
                 value_env=value_env,
@@ -986,6 +1255,8 @@ def _lower_statements(
                 schema=schema,
                 msg_type=msg_type,
                 payload=payload,
+                payload_spans=expr.payload_spans,
+                fallback_span=expr.span,
             )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
@@ -1016,6 +1287,7 @@ def _lower_statements(
                 binding_name=bind_name,
                 declared_type_text=declared_type_text,
                 protocol_ref=protocol_ref,
+                span=statement.span if isinstance(statement, LetStatement) else expr.span,
             )
             thread_env[bind_name] = _StaticThreadBinding(
                 protocol_ref=protocol_ref,
@@ -1027,9 +1299,14 @@ def _lower_statements(
 
         if isinstance(expr, HandoffStatement):
             if expr.from_thread.explicit_thread_handle or expr.to_thread.explicit_thread_handle:
-                raise MailboxRuntimeError("E_SOURCE_TYPE_INVALID", "explicit thread handles are not supported in the first DSL slice")
-            _require_thread_binding(thread_env, expr.from_thread.name)
-            _require_thread_binding(thread_env, expr.to_thread.name)
+                _raise_source_error(
+                    "E_SOURCE_TYPE_INVALID",
+                    "explicit thread handles are not supported in the first DSL slice",
+                    phase="check",
+                    span=expr.span,
+                )
+            _require_thread_binding(thread_env, expr.from_thread.name, span=expr.from_thread.span)
+            _require_thread_binding(thread_env, expr.to_thread.name, span=expr.to_thread.span)
             operations.append(
                 {
                     "kind": "handoff_operation",
@@ -1056,25 +1333,47 @@ def _lower_statements(
     return operations, thread_bindings, thread_aliases
 
 
-def _require_mailbox(mailbox_table: dict[str, dict[str, Any]], mailbox_name: str) -> dict[str, Any]:
+def _require_mailbox(
+    mailbox_table: dict[str, dict[str, Any]],
+    mailbox_name: str,
+    *,
+    span: SourceSpan | None = None,
+) -> dict[str, Any]:
     mailbox = mailbox_table.get(mailbox_name)
     if mailbox is None:
-        raise MailboxRuntimeError("E_SOURCE_REFERENCE_UNKNOWN", f"unknown mailbox reference: {mailbox_name}")
+        _raise_source_error(
+            "E_SOURCE_REFERENCE_UNKNOWN",
+            f"unknown mailbox reference: {mailbox_name}",
+            phase="check",
+            span=span,
+        )
     return mailbox
 
 
-def _require_thread_binding(thread_env: dict[str, _StaticThreadBinding], name: str) -> _StaticThreadBinding:
+def _require_thread_binding(
+    thread_env: dict[str, _StaticThreadBinding],
+    name: str,
+    *,
+    span: SourceSpan | None = None,
+) -> _StaticThreadBinding:
     binding = thread_env.get(name)
     if binding is None:
-        raise MailboxRuntimeError("E_SOURCE_REFERENCE_UNKNOWN", f"unknown thread binding: {name}")
+        _raise_source_error(
+            "E_SOURCE_REFERENCE_UNKNOWN",
+            f"unknown thread binding: {name}",
+            phase="check",
+            span=span,
+        )
     return binding
 
 
 def _require_qualified_message_ref(message_ref: MessageRef, *, context: str) -> str:
     if message_ref.protocol_ref is None:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             f"{context} requires a fully-qualified Protocol/version.Message reference",
+            phase="check",
+            span=message_ref.span,
         )
     return message_ref.protocol_ref
 
@@ -1083,12 +1382,18 @@ def _resolve_thread_message_protocol(message_ref: MessageRef, thread_protocol_re
     return message_ref.protocol_ref or thread_protocol_ref
 
 
-def _resolve_plaintext_protocol_for_mailbox(mailbox_entry: dict[str, Any]) -> str:
+def _resolve_plaintext_protocol_for_mailbox(
+    mailbox_entry: dict[str, Any],
+    *,
+    span: SourceSpan | None = None,
+) -> str:
     plain_text_refs = [item for item in mailbox_entry["accepts"] if str(item).startswith("PlainText/")]
     if len(plain_text_refs) != 1:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_MAILBOX_TEXT_NOT_ACCEPTED",
             f"mailbox {mailbox_entry['mailbox']} does not accept exactly one PlainText protocol",
+            phase="check",
+            span=span,
         )
     return str(plain_text_refs[0])
 
@@ -1120,7 +1425,7 @@ def _resolve_value(
 ) -> Any:
     if isinstance(value, VarRef):
         return _resolve_named_binding(
-            value.name,
+            value,
             value_env=value_env,
             thread_env=thread_env,
             inputs=inputs,
@@ -1158,7 +1463,7 @@ def _resolve_binding_value(
 ) -> Any:
     if isinstance(value, VarRef):
         return _resolve_named_binding(
-            value.name,
+            value,
             value_env=value_env,
             thread_env=thread_env,
             inputs=inputs,
@@ -1173,25 +1478,33 @@ def _resolve_binding_value(
 
 
 def _resolve_named_binding(
-    name: str,
+    value_ref: VarRef,
     *,
     value_env: dict[str, Any],
     thread_env: dict[str, _StaticThreadBinding],
     inputs: dict[str, Any],
     for_payload: bool,
 ) -> Any:
+    name = value_ref.name
     if name in value_env:
         return value_env[name]
     if name in inputs:
         return inputs[name]
     if name in thread_env:
         if for_payload:
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_TYPE_INVALID",
                 f"thread binding {name} cannot be used as a payload value",
+                phase="check",
+                span=value_ref.span,
             )
         return thread_env[name]
-    raise MailboxRuntimeError("E_SOURCE_VALUE_UNKNOWN", f"unknown binding or input variable: {name}")
+    _raise_source_error(
+        "E_SOURCE_VALUE_UNKNOWN",
+        f"unknown binding or input variable: {name}",
+        phase="check",
+        span=value_ref.span,
+    )
 
 
 def _validate_message_payload_for_source(
@@ -1200,25 +1513,40 @@ def _validate_message_payload_for_source(
     schema: dict[str, Any],
     msg_type: str,
     payload: dict[str, Any],
+    payload_spans: dict[str, SourceSpan] | None = None,
+    fallback_span: SourceSpan | None = None,
 ) -> None:
     message_schema = lookup_message_schema(schema, msg_type=msg_type)
     if message_schema is None:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_MESSAGE_UNKNOWN",
             f"message {msg_type} is not declared in {protocol_ref}",
+            phase="check",
+            span=fallback_span,
         )
     _validate_payload_field_types(
         protocol_ref=protocol_ref,
         msg_type=msg_type,
         payload=payload,
         message_schema=message_schema,
+        payload_spans=payload_spans,
+        fallback_span=fallback_span,
     )
-    validate_message_payload(
-        protocol_ref=protocol_ref,
-        msg_type=msg_type,
-        payload=payload,
-        message_schema=message_schema,
-    )
+    try:
+        validate_message_payload(
+            protocol_ref=protocol_ref,
+            msg_type=msg_type,
+            payload=payload,
+            message_schema=message_schema,
+        )
+    except MailboxRuntimeError as exc:
+        if exc.details:
+            raise
+        raise MailboxRuntimeError(
+            exc.code,
+            str(exc),
+            details=_error_details_for_source(phase="check", span=fallback_span),
+        ) from exc
 
 
 def _validate_payload_field_types(
@@ -1227,6 +1555,8 @@ def _validate_payload_field_types(
     msg_type: str,
     payload: dict[str, Any],
     message_schema: Any,
+    payload_spans: dict[str, SourceSpan] | None = None,
+    fallback_span: SourceSpan | None = None,
 ) -> None:
     if not isinstance(message_schema, dict):
         return
@@ -1241,12 +1571,14 @@ def _validate_payload_field_types(
             continue
         if _value_matches_declared_type(payload[field_name], type_text):
             continue
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_PAYLOAD_SCHEMA_INVALID",
             (
                 f"payload field {field_name} expected {type_text.strip()} "
                 f"for {protocol_ref}.{msg_type}, got {_describe_value_kind(payload[field_name])}"
             ),
+            phase="check",
+            span=(payload_spans or {}).get(field_name, fallback_span),
         )
 
 
@@ -1255,25 +1587,30 @@ def _validate_thread_binding_annotation(
     binding_name: str,
     declared_type_text: str | None,
     protocol_ref: str,
+    span: SourceSpan | None = None,
 ) -> None:
     if declared_type_text is None:
         return
-    annotated_protocol_ref = _extract_thread_protocol_ref(declared_type_text)
+    annotated_protocol_ref = _extract_thread_protocol_ref(declared_type_text, span=span)
     if annotated_protocol_ref is None:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             (
                 f"binding {binding_name} has annotation {declared_type_text}, "
                 "but thread-producing expressions require thread<Protocol/version>"
             ),
+            phase="check",
+            span=span,
         )
     if annotated_protocol_ref != protocol_ref:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             (
                 f"binding {binding_name} has annotation thread<{annotated_protocol_ref}>, "
                 f"but expression returns thread<{protocol_ref}>"
             ),
+            phase="check",
+            span=span,
         )
 
 
@@ -1282,22 +1619,27 @@ def _validate_value_binding_annotation(
     binding_name: str,
     declared_type_text: str | None,
     value: Any,
+    span: SourceSpan | None = None,
 ) -> None:
     if declared_type_text is None:
         return
-    if _extract_thread_protocol_ref(declared_type_text) is not None:
-        raise MailboxRuntimeError(
+    if _extract_thread_protocol_ref(declared_type_text, span=span) is not None:
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             f"binding {binding_name} is a value, not a thread handle of type {declared_type_text}",
+            phase="check",
+            span=span,
         )
     if _value_matches_declared_type(value, declared_type_text):
         return
-    raise MailboxRuntimeError(
+    _raise_source_error(
         "E_SOURCE_TYPE_INVALID",
         (
             f"binding {binding_name} expected {declared_type_text.strip()}, "
             f"got {_describe_value_kind(value)}"
         ),
+        phase="check",
+        span=span,
     )
 
 
@@ -1325,7 +1667,7 @@ def _normalize_type_text(type_text: str) -> str:
     return "".join(str(type_text).split())
 
 
-def _extract_thread_protocol_ref(type_text: str) -> str | None:
+def _extract_thread_protocol_ref(type_text: str, *, span: SourceSpan | None = None) -> str | None:
     normalized_type = _normalize_type_text(type_text)
     if len(normalized_type) < len("thread<>"):
         return None
@@ -1335,10 +1677,12 @@ def _extract_thread_protocol_ref(type_text: str) -> str | None:
     try:
         protocol_name, protocol_version = parse_protocol_ref(inner)
     except ValueError as exc:
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             f"invalid thread type annotation {type_text!r}: {exc}",
-        ) from exc
+            phase="check",
+            span=span,
+        )
     return format_protocol_ref(protocol_name, protocol_version)
 
 
@@ -1382,7 +1726,11 @@ def _normalize_inputs(inputs: dict[str, Any] | None) -> dict[str, Any]:
     if inputs is None:
         return {}
     if not isinstance(inputs, dict):
-        raise MailboxRuntimeError("E_SOURCE_TYPE_INVALID", "artifact.inputs must be a JSON object when provided")
+        _raise_source_error(
+            "E_SOURCE_TYPE_INVALID",
+            "artifact.inputs must be a JSON object when provided",
+            phase="check",
+        )
     return {normalize_protocol_component(str(key), "input_name"): value for key, value in inputs.items()}
 
 
@@ -1390,16 +1738,18 @@ def _normalize_mailbox_addresses(mailbox_addresses: dict[str, str] | None) -> di
     if mailbox_addresses is None:
         return {}
     if not isinstance(mailbox_addresses, dict):
-        raise MailboxRuntimeError(
+        _raise_source_error(
             "E_SOURCE_TYPE_INVALID",
             "artifact.mailbox_addresses must be a JSON object when provided",
+            phase="check",
         )
     normalized: dict[str, str] = {}
     for key, value in mailbox_addresses.items():
         if not isinstance(value, str) or not value.strip():
-            raise MailboxRuntimeError(
+            _raise_source_error(
                 "E_SOURCE_TYPE_INVALID",
                 f"mailbox address mapping for {key!r} must be a non-empty string",
+                phase="check",
             )
         normalized[normalize_protocol_component(str(key), "mailbox_name")] = value.strip()
     return normalized
@@ -1478,9 +1828,11 @@ def _tokenize(source: str) -> list[Token]:
             while end_index < length:
                 current = source[end_index]
                 if current == "\n" and not escaped:
-                    raise MailboxRuntimeError(
+                    _raise_source_error(
                         "E_SOURCE_PARSE_INVALID",
                         f"unterminated string literal at {start_line}:{start_column}",
+                        phase="parse",
+                        span=SourceSpan(start_line, start_column, start_line, start_column + 1),
                     )
                 if current == '"' and not escaped:
                     break
@@ -1489,9 +1841,11 @@ def _tokenize(source: str) -> list[Token]:
                     escaped = False
                 end_index += 1
             if end_index >= length or source[end_index] != '"':
-                raise MailboxRuntimeError(
+                _raise_source_error(
                     "E_SOURCE_PARSE_INVALID",
                     f"unterminated string literal at {start_line}:{start_column}",
+                    phase="parse",
+                    span=SourceSpan(start_line, start_column, start_line, start_column + 1),
                 )
             text = source[index : end_index + 1]
             tokens.append(Token("STRING", text, start_line, start_column))
@@ -1523,6 +1877,11 @@ def _tokenize(source: str) -> list[Token]:
             tokens.append(Token("IDENT", text, line, start_column))
             column += len(text)
             continue
-        raise MailboxRuntimeError("E_SOURCE_PARSE_INVALID", f"unexpected character at {line}:{column}: {ch!r}")
+        _raise_source_error(
+            "E_SOURCE_PARSE_INVALID",
+            f"unexpected character at {line}:{column}: {ch!r}",
+            phase="parse",
+            span=SourceSpan(line, column, line, column + 1),
+        )
     tokens.append(Token("EOF", "", line, column))
     return tokens

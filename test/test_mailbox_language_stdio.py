@@ -198,17 +198,7 @@ send to review_t using Approve {
 
     def test_dsl_program_check_reports_payload_type_errors(self) -> None:
         env = self.base_env()
-        source = (
-            orders_protocol_source()
-            + """
-mailbox reviewer_mb : Orders/v2;
-
-let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
-  order_id: 123;
-  items: ["sku-1"];
-};
-"""
-        )
+        source = "mailbox support_mb : PlainText/v1;\n\nlet text_t = send text to support_mb {\n  body: 123;\n};\n"
 
         response = run_stdio_jsonl(
             env,
@@ -219,7 +209,7 @@ let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
                     "artifact": {
                         "kind": "dsl_program",
                         "source": source,
-                        "mailbox_addresses": {"reviewer_mb": REVIEWER_ADDRESS},
+                        "mailbox_addresses": {"support_mb": PLANNER_ADDRESS},
                         "from_address": OPERATOR_ADDRESS,
                     },
                 }
@@ -230,6 +220,34 @@ let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
         self.assertEqual(response["id"], "dsl-check-type-error")
         self.assertEqual(response["error_code"], "E_PAYLOAD_SCHEMA_INVALID")
         self.assertIn("expected String", response["error"])
+        self.assertEqual(response["source_phase"], "check")
+        self.assertEqual(response["source_line"], 4)
+        self.assertEqual(response["source_column"], 3)
+
+    def test_dsl_program_check_reports_parse_source_diagnostics(self) -> None:
+        env = self.base_env()
+        response = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-parse-error",
+                    "command": "check",
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": "mailbox support_mb : PlainText/v1;\n@\n",
+                        "mailbox_addresses": {"support_mb": PLANNER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                }
+            ],
+        )[0]
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["id"], "dsl-parse-error")
+        self.assertEqual(response["error_code"], "E_SOURCE_PARSE_INVALID")
+        self.assertEqual(response["source_phase"], "parse")
+        self.assertEqual(response["source_line"], 2)
+        self.assertEqual(response["source_column"], 1)
 
     def test_dsl_program_run_supports_typed_value_bindings_and_thread_annotations(self) -> None:
         env = self.admin_env()

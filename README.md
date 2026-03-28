@@ -346,6 +346,7 @@ The current DSL slice supports:
 `check` and `lower` now also validate declared source field types for the bounded DSL slice before contacting the mailbox server. Primitive mismatches such as `String` vs `123` and list-shape mismatches such as `[OrderItem]` vs `"sku-1"` are returned as structured `E_PAYLOAD_SCHEMA_INVALID` diagnostics from the interpreter.
 They also validate bounded `let` annotations locally, so mismatched `let order_id: String = 123;` or `let t: thread<Support/v1> = send ... Orders/v2 ...;` programs fail before runtime.
 Nested object values are now preserved end-to-end as normal payload data, so a bounded DSL program can construct structured values such as attachment metadata without turning the language into a general-purpose scripting layer.
+For `dsl_program` errors, the interpreter now also includes bounded source diagnostics such as `source_phase`, `source_line`, and `source_column`, so parse-time and checker-time failures can be surfaced as language-tool output instead of only one free-form error string.
 
 For `dsl_program`, use:
 

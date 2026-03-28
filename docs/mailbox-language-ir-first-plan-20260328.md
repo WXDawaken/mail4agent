@@ -193,7 +193,8 @@ Notes:
 - That bounded source layer now also performs a first static payload-type pass before runtime execution: declared field types are preserved in lowered protocol schemas, and the interpreter can reject primitive/list-shape mismatches such as `String` vs `123` or `[OrderItem]` vs `"sku-1"` during `check` / `lower`.
 - That same source layer now also honors bounded `let` type annotations and aliases: literal/value bindings can be checked against `String`, `Bool`, `Int`, `Float`, or `[T]`, and thread-producing expressions can be checked against `thread<Protocol/version>` plus simple thread-handle aliases.
 - The value layer now also supports bounded nested object literals (`{ field: expr; ... }`) so structured payload fragments can be composed locally and lowered into the same typed runtime artifacts without introducing functions, control flow, or a general-purpose expression language.
-- The next step after this MVP is broader DSL coverage, richer source spans, and fuller declaration/type diagnostics, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
+- That interpreter path now also emits bounded source diagnostics for `dsl_program` failures: parse/check errors carry `source_phase` plus line/column metadata, and payload field type mismatches are anchored to the relevant source field instead of only returning a free-form string.
+- The next step after this MVP is broader DSL coverage and fuller declaration/type diagnostics, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
 
 ## Phase 4: Full Checker and Source-Level UX
 
@@ -212,6 +213,7 @@ Status:
 - A first bounded payload-field checker is now implemented for the interpreter path. Primitive and list-shape mismatches are caught locally during source lowering, while mailbox accepts/state/auth/runtime truth remains server-owned.
 - A first bounded `let` checker is now also implemented: value bindings, thread-handle annotations, and thread aliases are resolved locally during lowering, while live mailbox routing and thread ids are still only assigned by the runtime.
 - A first bounded structured-value layer is now also implemented: nested object literals survive lowering and stdio `run`, which makes richer payload assembly possible without widening the DSL into a general-purpose language.
+- A first bounded source-diagnostics layer is now also implemented: parser and checker errors can now surface `source_phase` plus line/column metadata through `MailboxRuntimeError.details` and the stdio JSON responses, which is enough for pipe-friendly editor/tool integration without moving syntax handling into the mailbox server.
 
 ## Difficulty Assessment
 

@@ -320,6 +320,33 @@ let done_t = send to review_t using Approve {
             )
         self.assertEqual(context.exception.code, "E_SOURCE_TYPE_INVALID")
 
+    def test_lower_source_program_reports_parse_source_diagnostics(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                "mailbox support_mb : PlainText/v1;\n@\n",
+                mailbox_addresses={"support_mb": "planner@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_SOURCE_PARSE_INVALID")
+        self.assertEqual(context.exception.details["source_phase"], "parse")
+        self.assertEqual(context.exception.details["source_line"], 2)
+        self.assertEqual(context.exception.details["source_column"], 1)
+
+    def test_lower_source_program_reports_field_level_check_diagnostics(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                "mailbox support_mb : PlainText/v1;\n\n"
+                "let text_t = send text to support_mb {\n"
+                "  body: 123;\n"
+                "};\n",
+                mailbox_addresses={"support_mb": "planner@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_PAYLOAD_SCHEMA_INVALID")
+        self.assertEqual(context.exception.details["source_phase"], "check")
+        self.assertEqual(context.exception.details["source_line"], 4)
+        self.assertEqual(context.exception.details["source_column"], 3)
+
     def test_lower_source_program_rejects_multi_protocol_shorthand_without_plaintext_lead(self) -> None:
         with self.assertRaises(MailboxRuntimeError) as context:
             lower_source_program(

@@ -75,6 +75,7 @@ def _handle_request_line(raw_line: str, *, args: argparse.Namespace, line_number
             error=str(exc),
             error_code=exc.code,
             line_number=line_number,
+            details=exc.details,
         )
     except MailboxHTTPError as exc:
         error_code = None
@@ -673,6 +674,7 @@ def _error_response(
     error_code: str | None = None,
     status: int | None = None,
     payload: dict[str, Any] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response: dict[str, Any] = {
         "ok": False,
@@ -688,6 +690,10 @@ def _error_response(
         response["status"] = status
     if payload is not None:
         response["payload"] = payload
+    if details:
+        for key, value in details.items():
+            if key not in response:
+                response[key] = value
     return response
 
 
