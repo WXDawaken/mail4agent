@@ -141,6 +141,60 @@ let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
             )
         self.assertEqual(context.exception.code, "E_SOURCE_VALUE_UNKNOWN")
 
+    def test_lower_source_program_rejects_primitive_field_type_mismatch(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                orders_protocol_source()
+                + """
+mailbox reviewer_mb : Orders/v2;
+
+let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: 123;
+  items: ["sku-1"];
+};
+""",
+                mailbox_addresses={"reviewer_mb": "reviewer@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_PAYLOAD_SCHEMA_INVALID")
+        self.assertIn("expected String", str(context.exception))
+
+    def test_lower_source_program_rejects_list_field_type_mismatch(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                orders_protocol_source()
+                + """
+mailbox reviewer_mb : Orders/v2;
+
+let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: "123";
+  items: items;
+};
+""",
+                mailbox_addresses={"reviewer_mb": "reviewer@mail4agent.codex"},
+                inputs={"items": "sku-1"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_PAYLOAD_SCHEMA_INVALID")
+        self.assertIn("expected [OrderItem]", str(context.exception))
+
+    def test_lower_source_program_rejects_builtin_plaintext_body_type_mismatch(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                orders_protocol_source()
+                + """
+mailbox support_mb : PlainText/v1;
+
+let text_t = send text to support_mb {
+  body: 123;
+};
+""",
+                mailbox_addresses={"support_mb": "planner@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_PAYLOAD_SCHEMA_INVALID")
+        self.assertIn("expected String", str(context.exception))
+
     def test_lower_source_program_rejects_binding_send_to_existing_thread(self) -> None:
         with self.assertRaises(MailboxRuntimeError) as context:
             lower_source_program(

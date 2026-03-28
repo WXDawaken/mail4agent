@@ -340,6 +340,8 @@ The current DSL slice supports:
 - `spawn ... from <thread>`
 - `handoff <thread> -> <thread>`
 
+`check` and `lower` now also validate declared source field types for the bounded DSL slice before contacting the mailbox server. Primitive mismatches such as `String` vs `123` and list-shape mismatches such as `[OrderItem]` vs `"sku-1"` are returned as structured `E_PAYLOAD_SCHEMA_INVALID` diagnostics from the interpreter.
+
 For `dsl_program`, use:
 
 - `artifact.mailbox_addresses` to map symbolic mailbox names in source to real server mailbox addresses

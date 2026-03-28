@@ -196,6 +196,41 @@ send to review_t using Approve {
         self.assertEqual(lowered["artifact"]["mailboxes"][0]["address"], REVIEWER_ADDRESS)
         self.assertEqual(lowered["artifact"]["thread_bindings"]["review_t"]["state"], "Done")
 
+    def test_dsl_program_check_reports_payload_type_errors(self) -> None:
+        env = self.base_env()
+        source = (
+            orders_protocol_source()
+            + """
+mailbox reviewer_mb : Orders/v2;
+
+let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: 123;
+  items: ["sku-1"];
+};
+"""
+        )
+
+        response = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-check-type-error",
+                    "command": "check",
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {"reviewer_mb": REVIEWER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                }
+            ],
+        )[0]
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["id"], "dsl-check-type-error")
+        self.assertEqual(response["error_code"], "E_PAYLOAD_SCHEMA_INVALID")
+        self.assertIn("expected String", response["error"])
+
     def test_protocol_check_and_lower_use_compile_cache(self) -> None:
         cache_dir = self.runtime_dir / "protocol-cache"
         env = self.base_env()

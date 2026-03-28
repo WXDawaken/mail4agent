@@ -10,6 +10,7 @@ from mailbox_language_runtime import (
     MailboxRuntimeError,
     compile_protocol_runtime_schema,
     format_protocol_ref,
+    lookup_message_schema,
     normalize_protocol_component,
     parse_protocol_ref,
     resolve_transition_target_state,
@@ -694,11 +695,11 @@ def _lower_statements(
             protocol_ref = _resolve_plaintext_protocol_for_mailbox(mailbox_entry)
             payload = _resolve_payload(expr.payload, inputs)
             schema = protocol_schemas[protocol_ref]
-            validate_message_payload(
+            _validate_message_payload_for_source(
                 protocol_ref=protocol_ref,
+                schema=schema,
                 msg_type="Text",
                 payload=payload,
-                message_schema=schema["messages"]["Text"],
             )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
@@ -749,13 +750,12 @@ def _lower_statements(
                 payload = _resolve_payload(expr.payload, inputs)
                 schema = protocol_schemas[protocol_ref]
                 msg_type = expr.message_ref.message_name
-                message_schema = schema["messages"].get(msg_type)
-                if message_schema is None:
-                    raise MailboxRuntimeError(
-                        "E_MESSAGE_UNKNOWN",
-                        f"message {msg_type} is not declared in {protocol_ref}",
-                    )
-                validate_message_payload(protocol_ref=protocol_ref, msg_type=msg_type, payload=payload, message_schema=message_schema)
+                _validate_message_payload_for_source(
+                    protocol_ref=protocol_ref,
+                    schema=schema,
+                    msg_type=msg_type,
+                    payload=payload,
+                )
                 next_state = resolve_transition_target_state(
                     protocol_ref=protocol_ref,
                     schema=schema,
@@ -803,13 +803,12 @@ def _lower_statements(
             payload = _resolve_payload(expr.payload, inputs)
             schema = protocol_schemas[protocol_ref]
             msg_type = expr.message_ref.message_name
-            message_schema = schema["messages"].get(msg_type)
-            if message_schema is None:
-                raise MailboxRuntimeError(
-                    "E_MESSAGE_UNKNOWN",
-                    f"message {msg_type} is not declared in {protocol_ref}",
-                )
-            validate_message_payload(protocol_ref=protocol_ref, msg_type=msg_type, payload=payload, message_schema=message_schema)
+            _validate_message_payload_for_source(
+                protocol_ref=protocol_ref,
+                schema=schema,
+                msg_type=msg_type,
+                payload=payload,
+            )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
                 schema=schema,
@@ -856,10 +855,12 @@ def _lower_statements(
             payload = _resolve_payload(expr.payload, inputs)
             schema = protocol_schemas[protocol_ref]
             msg_type = expr.message_ref.message_name
-            message_schema = schema["messages"].get(msg_type)
-            if message_schema is None:
-                raise MailboxRuntimeError("E_MESSAGE_UNKNOWN", f"message {msg_type} is not declared in {protocol_ref}")
-            validate_message_payload(protocol_ref=protocol_ref, msg_type=msg_type, payload=payload, message_schema=message_schema)
+            _validate_message_payload_for_source(
+                protocol_ref=protocol_ref,
+                schema=schema,
+                msg_type=msg_type,
+                payload=payload,
+            )
             next_state = resolve_transition_target_state(
                 protocol_ref=protocol_ref,
                 schema=schema,
@@ -978,6 +979,122 @@ def _resolve_value(value: Any, inputs: dict[str, Any]) -> Any:
     return value
 
 
+def _validate_message_payload_for_source(
+    *,
+    protocol_ref: str,
+    schema: dict[str, Any],
+    msg_type: str,
+    payload: dict[str, Any],
+) -> None:
+    message_schema = lookup_message_schema(schema, msg_type=msg_type)
+    if message_schema is None:
+        raise MailboxRuntimeError(
+            "E_MESSAGE_UNKNOWN",
+            f"message {msg_type} is not declared in {protocol_ref}",
+        )
+    _validate_payload_field_types(
+        protocol_ref=protocol_ref,
+        msg_type=msg_type,
+        payload=payload,
+        message_schema=message_schema,
+    )
+    validate_message_payload(
+        protocol_ref=protocol_ref,
+        msg_type=msg_type,
+        payload=payload,
+        message_schema=message_schema,
+    )
+
+
+def _validate_payload_field_types(
+    *,
+    protocol_ref: str,
+    msg_type: str,
+    payload: dict[str, Any],
+    message_schema: Any,
+) -> None:
+    if not isinstance(message_schema, dict):
+        return
+    raw_fields = message_schema.get("fields")
+    if not isinstance(raw_fields, dict):
+        return
+    for field_name, raw_field_schema in raw_fields.items():
+        if field_name not in payload or not isinstance(raw_field_schema, dict):
+            continue
+        type_text = raw_field_schema.get("type")
+        if not isinstance(type_text, str) or not type_text.strip():
+            continue
+        if _value_matches_declared_type(payload[field_name], type_text):
+            continue
+        raise MailboxRuntimeError(
+            "E_PAYLOAD_SCHEMA_INVALID",
+            (
+                f"payload field {field_name} expected {type_text.strip()} "
+                f"for {protocol_ref}.{msg_type}, got {_describe_value_kind(payload[field_name])}"
+            ),
+        )
+
+
+def _value_matches_declared_type(value: Any, type_text: str) -> bool:
+    normalized_type = _normalize_type_text(type_text)
+    list_item_type = _unwrap_list_type(normalized_type)
+    if list_item_type is not None:
+        return isinstance(value, list) and all(
+            _value_matches_declared_type(item, list_item_type) for item in value
+        )
+
+    lowered = normalized_type.lower()
+    if lowered == "string":
+        return isinstance(value, str)
+    if lowered in {"bool", "boolean"}:
+        return isinstance(value, bool)
+    if lowered in {"int", "integer"}:
+        return type(value) is int
+    if lowered in {"float", "double", "decimal", "number"}:
+        return (type(value) is int) or (type(value) is float)
+    return not isinstance(value, list)
+
+
+def _normalize_type_text(type_text: str) -> str:
+    return "".join(str(type_text).split())
+
+
+def _unwrap_list_type(type_text: str) -> str | None:
+    if not type_text.startswith("[") or not type_text.endswith("]"):
+        return None
+    depth = 0
+    for index, character in enumerate(type_text):
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0 and index != len(type_text) - 1:
+                return None
+        if depth < 0:
+            return None
+    if depth != 0:
+        return None
+    return type_text[1:-1]
+
+
+def _describe_value_kind(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if type(value) is int:
+        return "int"
+    if type(value) is float:
+        return "float"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
 def _normalize_inputs(inputs: dict[str, Any] | None) -> dict[str, Any]:
     if inputs is None:
         return {}
@@ -1011,6 +1128,13 @@ def _protocol_decl_to_schema(decl: ProtocolDecl) -> dict[str, Any]:
         messages[message.name] = {
             "required": [field.name for field in message.fields if not field.optional],
             "optional": [field.name for field in message.fields if field.optional],
+            "fields": {
+                field.name: {
+                    "required": not field.optional,
+                    "type": field.type_text,
+                }
+                for field in message.fields
+            },
             "allow_additional_fields": False,
         }
     return {
