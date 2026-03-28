@@ -296,6 +296,29 @@ python .\client.py typed-send --to-address reviewer@mail4agent.codex --from-addr
 
 The typed commands currently target the admin-backed IR/runtime surface: `register-protocol`, `list-protocols`, `set-mailbox-protocols`, `get-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff`. When both `MAILBOX_SESSION_TOKEN` and `MAILBOX_ADMIN_TOKEN` are present in the environment, these typed commands automatically prefer the admin token unless you pass an explicit `--token` or `--admin-token`.
 
+For pipe-friendly local tooling, the repo now also includes a native-stdio mailbox-language interpreter shell in `mailbox_language_stdio.py`. It currently speaks JSON lines and stays intentionally DSL-agnostic: each input line is one `{command, artifact}` request, and each output line is one structured JSON result or error.
+
+Check and lower a protocol schema with an optional local compile cache:
+
+```powershell
+@'
+{"id":"orders-check","command":"check","cache_dir":".\\.tmp_lang_cache","artifact":{"kind":"protocol_schema","protocol":"Orders/v2","schema":{"states":["Init","Done"],"start":"Init","messages":{"QuoteReq":{"required":["order_id"],"allow_additional_fields":false}},"transitions":[{"message":"QuoteReq","from":"Init","to":"Done"}]}}}
+{"id":"orders-lower","command":"lower","cache_dir":".\\.tmp_lang_cache","artifact":{"kind":"protocol_schema","protocol":"Orders/v2","schema":{"states":["Init","Done"],"start":"Init","messages":{"QuoteReq":{"required":["order_id"],"allow_additional_fields":false}},"transitions":[{"message":"QuoteReq","from":"Init","to":"Done"}]}}}
+'@ | python .\mailbox_language_stdio.py
+```
+
+Run a typed mailbox-binding or envelope request through the existing admin-backed IR runtime:
+
+```powershell
+$env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
+@'
+{"id":"bind-reviewer","command":"run","artifact":{"kind":"mailbox_binding","address":"reviewer@mail4agent.codex","accepts":["Orders/v2"]}}
+{"id":"send-quote","command":"run","artifact":{"kind":"message_envelope","op":"send","from_address":"operator@mail4agent.codex","to_address":"reviewer@mail4agent.codex","protocol":"Orders/v2","message":"QuoteReq","payload":{"order_id":"123","items":["sku-1"]}}}
+'@ | python .\mailbox_language_stdio.py --base-url http://127.0.0.1:8787
+```
+
+`mailbox_language_stdio.py` currently supports `check`, `lower`, and `run` for four machine-friendly artifact kinds: `protocol_schema`, `mailbox_binding`, `message_envelope`, and `handoff_event`. It emits structured diagnostics instead of Python tracebacks, and `run` reuses the same typed admin routes and client helpers as `client.py`.
+
 Reply and ack:
 
 ```powershell
@@ -457,4 +480,4 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Rol
 - `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token
-- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; use `register-protocol`, `set-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff` as the contract that a future native-stdio DSL interpreter will target
+- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; `mailbox_language_stdio.py` now provides the first native-stdio interpreter shell on top of that same contract, and the next step is source DSL parsing and lowering rather than changing the mailbox server

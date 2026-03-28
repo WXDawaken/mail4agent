@@ -558,6 +558,59 @@ class MailboxHTTPClient:
         payload = self._request_admin_json("POST", "/admin/execute_handoff_event", body)
         return payload["handoff"]
 
+    def execute_message_envelope(
+        self,
+        *,
+        from_address: str,
+        envelope: dict[str, Any],
+        subject: str | None = None,
+        reply_to_address: str | None = None,
+        correlation_id: str | None = None,
+        workflow_id: str | None = None,
+        idempotency_key: str | None = None,
+        headers: dict[str, Any] | None = None,
+        deliver_after_seconds: int = 0,
+        expires_in_seconds: int | None = None,
+        max_attempts: int = 8,
+        message_type: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "from_address": from_address,
+            "envelope": envelope,
+            "deliver_after_seconds": deliver_after_seconds,
+            "max_attempts": max_attempts,
+        }
+        if subject is not None:
+            body["subject"] = subject
+        if reply_to_address is not None:
+            body["reply_to_address"] = reply_to_address
+        if correlation_id is not None:
+            body["correlation_id"] = correlation_id
+        if workflow_id is not None:
+            body["workflow_id"] = workflow_id
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        if headers is not None:
+            body["headers"] = headers
+        if expires_in_seconds is not None:
+            body["expires_in_seconds"] = expires_in_seconds
+        if message_type is not None:
+            body["message_type"] = message_type
+        payload = self._request_admin_json("POST", "/admin/execute_message_envelope", body)
+        return payload["result"]
+
+    def execute_handoff_event(
+        self,
+        *,
+        event: dict[str, Any],
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"event": event}
+        if actor is not None:
+            body["actor"] = actor
+        payload = self._request_admin_json("POST", "/admin/execute_handoff_event", body)
+        return payload["handoff"]
+
     def send(
         self,
         *,
