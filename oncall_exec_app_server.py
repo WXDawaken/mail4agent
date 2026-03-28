@@ -28,6 +28,14 @@ ROLE_SPECS: dict[str, AppServerRoleSpec] = {
         config_file="operator.mailbox_client.json",
         prompt_file="docs/dogfood-high-operator-oncall-prompt.txt",
     ),
+    "salvage_run_dev": AppServerRoleSpec(
+        config_file="salvage_run_dev.mailbox_client.json",
+        prompt_file="docs/salvage-run-dev-oncall-prompt.txt",
+    ),
+    "game_engine_dev": AppServerRoleSpec(
+        config_file="game_engine_dev.mailbox_client.json",
+        prompt_file="docs/game-engine-dev-oncall-prompt.txt",
+    ),
 }
 
 DEFAULT_WORKER_IDLE_TIMEOUT_SECONDS = 900.0
@@ -94,7 +102,7 @@ class AppServerOncallExecutor:
             else (resolved_workspace_root_dir / ".codex_home_dogfood").resolve()
         )
         prompt_path = (resolved_workspace_root_dir / role_spec.prompt_file).resolve()
-        mailbox_client_path = (resolved_workspace_root_dir / "client.py").resolve()
+        mailbox_client_path = (root / "client.py").resolve()
         runtime_config_path = (runtime_dir / role_spec.config_file).resolve()
         runtime_delivery_path = (runtime_dir / f"{role}-current-delivery.json").resolve()
         last_message_path = (runtime_dir / f"{role}-oncall-last-message.txt").resolve()

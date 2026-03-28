@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("operator")]
+    [ValidateSet("operator", "salvage_run_dev", "game_engine_dev")]
     [string]$Role,
     [string]$RuntimeDir = ".tmp_dogfood",
     [string]$ReasoningEffort,
@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$mailboxClientPath = Join-Path $root "client.py"
 $workspaceRoot = if ([string]::IsNullOrWhiteSpace($WorkspaceDir)) {
     $root
 }
@@ -43,6 +44,16 @@ $profileMap = @{
             "--mailbox-type", "group",
             "--agent-name", "dogfood-operator"
         )
+    }
+    salvage_run_dev = @{
+        ConfigFile = "salvage_run_dev.mailbox_client.json"
+        PromptFile = "docs\salvage-run-dev-oncall-prompt.txt"
+        DefaultEffort = "high"
+    }
+    game_engine_dev = @{
+        ConfigFile = "game_engine_dev.mailbox_client.json"
+        PromptFile = "docs\game-engine-dev-oncall-prompt.txt"
+        DefaultEffort = "high"
     }
 }
 
@@ -142,12 +153,12 @@ Claimed delivery context:
 - delivery_file: $sandboxDeliveryPath
 
 Oncall rules:
-1. The supervisor already claimed this delivery. Do not run python .\client.py claim.
-2. Read the thread with python .\client.py --format text thread --message-id $messageId.
-3. Keep the task bounded to one mailbox-native operator update in this repo.
+1. The supervisor already claimed this delivery. Do not run python "$mailboxClientPath" claim.
+2. Read the thread with python "$mailboxClientPath" --format text thread --message-id $messageId.
+3. Keep the task bounded to one mailbox-native, role-owned update in this repo.
 4. Run focused validation for the exact surface you changed.
 5. Reply exactly once with:
-   python .\client.py reply --delivery-file "$sandboxDeliveryPath" --idempotency-key "oncall-$deliveryId-reply" --payload-json '{...}'
+   python "$mailboxClientPath" reply --delivery-file "$sandboxDeliveryPath" --idempotency-key "oncall-$deliveryId-reply" --payload-json '{...}'
 6. Do not run ack, nack, or reply --ack-after. The supervisor will ack on exit code 0 and nack on non-zero.
 7. If the task is too broad but you can explain why safely, send a deferred reply and still exit 0.
 8. Exit non-zero only for transient failure where retry is desired.
@@ -160,7 +171,7 @@ Workspace root:
 
 Push-Location $workspaceRoot
 try {
-    $loginArgs = @(".\client.py", "login", "--output", "token")
+    $loginArgs = @($mailboxClientPath, "login", "--output", "token")
     $loginProjectId = [string]$configJson.project_id
     if ([string]::IsNullOrWhiteSpace($loginProjectId)) {
         throw "Runtime config is missing project_id."
