@@ -370,6 +370,194 @@ class MailboxHTTPClient:
             query["limit"] = str(limit)
         return self._request_json("GET", "/retry-queue", query=query or None)
 
+    def register_protocol(
+        self,
+        *,
+        protocol: str,
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"protocol": protocol}
+        if schema is not None:
+            body["schema"] = schema
+        payload = self._request_admin_json("POST", "/admin/register_protocol", body)
+        return payload["protocol"]
+
+    def list_protocols(self) -> list[dict[str, Any]]:
+        payload = self._request_admin_json("GET", "/admin/list_protocols")
+        protocols = payload.get("protocols")
+        if not isinstance(protocols, list):
+            raise RuntimeError("mailbox server returned invalid protocols payload")
+        return [item for item in protocols if isinstance(item, dict)]
+
+    def set_mailbox_protocols(
+        self,
+        *,
+        address: str,
+        accepts: list[str] | tuple[str, ...],
+        default_protocol: str | None = None,
+    ) -> dict[str, Any]:
+        if not accepts:
+            raise ValueError("accepts must not be empty")
+        body: dict[str, Any] = {
+            "address": address,
+            "accepts": [str(item) for item in accepts],
+        }
+        if default_protocol is not None:
+            body["default_protocol"] = default_protocol
+        payload = self._request_admin_json("POST", "/admin/set_mailbox_protocols", body)
+        return payload["bindings"]
+
+    def get_mailbox_protocols(self, *, address: str) -> dict[str, Any]:
+        payload = self._request_admin_json("GET", "/admin/get_mailbox_protocols", query={"address": address})
+        return payload["bindings"]
+
+    def typed_send(
+        self,
+        *,
+        to_address: str,
+        protocol: str,
+        message: str,
+        payload: dict[str, Any],
+        from_address: str | None = None,
+        subject: str | None = None,
+        thread_id: str | None = None,
+        reply_to_address: str | None = None,
+        correlation_id: str | None = None,
+        workflow_id: str | None = None,
+        idempotency_key: str | None = None,
+        headers: dict[str, Any] | None = None,
+        deliver_after_seconds: int = 0,
+        expires_in_seconds: int | None = None,
+        max_attempts: int = 8,
+        wire_message_type: str | None = None,
+    ) -> dict[str, Any]:
+        protocol_name, protocol_version = _split_protocol_ref(protocol)
+        effective_from = from_address or self._effective_from_address()
+        if effective_from is None and self._current_session_profile() is None:
+            raise ValueError(
+                "from_address is required unless configured locally or provided by an agent session login"
+            )
+        envelope: dict[str, Any] = {
+            "op": "send",
+            "target_kind": "thread" if thread_id is not None else "mailbox",
+            "protocol": protocol_name,
+            "version": protocol_version,
+            "msg_type": message,
+            "payload": payload,
+            "to_address": to_address,
+        }
+        if thread_id is not None:
+            envelope["thread_id"] = thread_id
+        else:
+            envelope["mailbox_address"] = to_address
+        body: dict[str, Any] = {
+            "from_address": effective_from or "",
+            "envelope": envelope,
+            "deliver_after_seconds": deliver_after_seconds,
+            "max_attempts": max_attempts,
+        }
+        if subject is not None:
+            body["subject"] = subject
+        if reply_to_address is not None:
+            body["reply_to_address"] = reply_to_address
+        if correlation_id is not None:
+            body["correlation_id"] = correlation_id
+        if workflow_id is not None:
+            body["workflow_id"] = workflow_id
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        if headers is not None:
+            body["headers"] = headers
+        if expires_in_seconds is not None:
+            body["expires_in_seconds"] = expires_in_seconds
+        if wire_message_type is not None:
+            body["message_type"] = wire_message_type
+        payload_result = self._request_admin_json("POST", "/admin/execute_message_envelope", body)
+        return payload_result["result"]
+
+    def typed_spawn(
+        self,
+        *,
+        to_address: str,
+        from_thread_id: str,
+        protocol: str,
+        message: str,
+        payload: dict[str, Any],
+        from_address: str | None = None,
+        subject: str | None = None,
+        reply_to_address: str | None = None,
+        correlation_id: str | None = None,
+        workflow_id: str | None = None,
+        idempotency_key: str | None = None,
+        headers: dict[str, Any] | None = None,
+        deliver_after_seconds: int = 0,
+        expires_in_seconds: int | None = None,
+        max_attempts: int = 8,
+        wire_message_type: str | None = None,
+    ) -> dict[str, Any]:
+        protocol_name, protocol_version = _split_protocol_ref(protocol)
+        effective_from = from_address or self._effective_from_address()
+        if effective_from is None and self._current_session_profile() is None:
+            raise ValueError(
+                "from_address is required unless configured locally or provided by an agent session login"
+            )
+        body: dict[str, Any] = {
+            "from_address": effective_from or "",
+            "envelope": {
+                "op": "spawn",
+                "target_kind": "mailbox",
+                "mailbox_address": to_address,
+                "to_address": to_address,
+                "protocol": protocol_name,
+                "version": protocol_version,
+                "msg_type": message,
+                "parent_thread_id": from_thread_id,
+                "payload": payload,
+            },
+            "deliver_after_seconds": deliver_after_seconds,
+            "max_attempts": max_attempts,
+        }
+        if subject is not None:
+            body["subject"] = subject
+        if reply_to_address is not None:
+            body["reply_to_address"] = reply_to_address
+        if correlation_id is not None:
+            body["correlation_id"] = correlation_id
+        if workflow_id is not None:
+            body["workflow_id"] = workflow_id
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        if headers is not None:
+            body["headers"] = headers
+        if expires_in_seconds is not None:
+            body["expires_in_seconds"] = expires_in_seconds
+        if wire_message_type is not None:
+            body["message_type"] = wire_message_type
+        payload_result = self._request_admin_json("POST", "/admin/execute_message_envelope", body)
+        return payload_result["result"]
+
+    def typed_handoff(
+        self,
+        *,
+        from_thread_id: str,
+        to_thread_id: str,
+        actor: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "event": {
+                "op": "handoff",
+                "from_thread_id": from_thread_id,
+                "to_thread_id": to_thread_id,
+            }
+        }
+        if actor is not None:
+            body["actor"] = actor
+        if metadata is not None:
+            body["event"]["metadata"] = metadata
+        payload = self._request_admin_json("POST", "/admin/execute_handoff_event", body)
+        return payload["handoff"]
+
     def send(
         self,
         *,
@@ -706,6 +894,16 @@ class MailboxHTTPClient:
         )
         return bool(payload["ok"])
 
+    def _request_admin_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        query: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(method, path, body, query=query, use_bootstrap_token=True)
+
     def _request_json(
         self,
         method: str,
@@ -717,8 +915,15 @@ class MailboxHTTPClient:
     ) -> dict[str, Any]:
         url = self._build_url(path, query=query)
         auth_token = self._select_request_token(path=path, use_bootstrap_token=use_bootstrap_token)
+        auth_header_name = "X-Mailbox-Admin-Token" if path.startswith("/admin/") and use_bootstrap_token else "X-Mailbox-Token"
         try:
-            return self._perform_request(method, url, auth_token, body)
+            return self._perform_request(
+                method,
+                url,
+                auth_token,
+                body,
+                auth_header_name=auth_header_name,
+            )
         except error.HTTPError as exc:
             if (
                 exc.code == 401
@@ -732,7 +937,13 @@ class MailboxHTTPClient:
                 self._login_cache = None
                 refreshed_token = self._select_request_token(path=path, use_bootstrap_token=False)
                 if refreshed_token != auth_token:
-                    return self._perform_request(method, url, refreshed_token, body)
+                    return self._perform_request(
+                        method,
+                        url,
+                        refreshed_token,
+                        body,
+                        auth_header_name=auth_header_name,
+                    )
             payload, raw_text = self._decode_error_response(exc)
             raise MailboxHTTPError(exc.code, payload=payload, body=raw_text) from exc
 
@@ -753,10 +964,12 @@ class MailboxHTTPClient:
         url: str,
         auth_token: str,
         body: dict[str, Any] | None,
+        *,
+        auth_header_name: str,
     ) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
-            "X-Mailbox-Token": auth_token,
+            auth_header_name: auth_token,
         }
         raw_body: bytes | None = None
         if body is not None:
@@ -878,6 +1091,16 @@ def _merge_unique_strings(*groups: list[str]) -> list[str]:
 
 def _default_consumer_id() -> str:
     return f"{socket.gethostname().lower()}-{os.getpid()}"
+
+
+def _split_protocol_ref(protocol: str) -> tuple[str, str]:
+    if not isinstance(protocol, str) or not protocol.strip():
+        raise ValueError("protocol must be a non-empty string like Name/version")
+    normalized = protocol.strip()
+    protocol_name, separator, protocol_version = normalized.partition("/")
+    if not separator or not protocol_name.strip() or not protocol_version.strip():
+        raise ValueError("protocol must use the form Name/version")
+    return protocol_name.strip(), protocol_version.strip()
 
 
 def _reply_subject(subject: Any) -> str | None:

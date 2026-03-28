@@ -25,6 +25,10 @@ Auth input precedence for non-login commands:
     5. `MAILBOX_TOKEN`
     6. `MAILBOX_ADMIN_TOKEN`
     7. piped stdin (JSON bundle or plain token)
+
+For the current admin-only typed/runtime commands, implicit environment fallback prefers
+`MAILBOX_ADMIN_TOKEN` over `MAILBOX_SESSION_TOKEN`/`MAILBOX_TOKEN` unless an explicit
+token flag was provided on the command line.
 """
 
 import argparse
@@ -40,6 +44,19 @@ from typing import Any, cast
 
 from codex_mailbox_client import DEFAULT_MAILBOX_BASE_URL, MailboxClientConfig, MailboxHTTPClient, MailboxHTTPError
 from mailbox_worker import ConsumeConfig, run_consume_loop, run_subprocess_handler
+
+
+_ADMIN_BOOTSTRAP_COMMANDS = frozenset(
+    {
+        "register-protocol",
+        "list-protocols",
+        "set-mailbox-protocols",
+        "get-mailbox-protocols",
+        "typed-send",
+        "typed-spawn",
+        "typed-handoff",
+    }
+)
 
 
 def main() -> None:
@@ -173,6 +190,41 @@ def _build_parser() -> argparse.ArgumentParser:
     thread_summaries_parser.add_argument("--to-address")
     thread_summaries_parser.add_argument("--limit", type=int, default=20)
 
+    register_protocol_parser = subparsers.add_parser(
+        "register-protocol",
+        parents=[common],
+        help="register one protocol schema artifact for typed runtime execution",
+    )
+    register_protocol_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    register_protocol_parser.add_argument("--schema-json", help="protocol schema JSON object")
+    register_protocol_parser.add_argument("--schema-file", help="read protocol schema JSON object from file")
+
+    subparsers.add_parser(
+        "list-protocols",
+        parents=[common],
+        help="list registered protocol schema artifacts",
+    )
+
+    set_mailbox_protocols_parser = subparsers.add_parser(
+        "set-mailbox-protocols",
+        parents=[common],
+        help="configure mailbox accepts/default protocol bindings",
+    )
+    set_mailbox_protocols_parser.add_argument("--address", required=True)
+    set_mailbox_protocols_parser.add_argument(
+        "--accepts",
+        required=True,
+        help="comma-separated protocol refs like PlainText/v1,Orders/v2",
+    )
+    set_mailbox_protocols_parser.add_argument("--default-protocol")
+
+    get_mailbox_protocols_parser = subparsers.add_parser(
+        "get-mailbox-protocols",
+        parents=[common],
+        help="inspect mailbox accepts/default protocol bindings",
+    )
+    get_mailbox_protocols_parser.add_argument("--address", required=True)
+
     send_parser = subparsers.add_parser("send", parents=[common], help="send one message")
     send_parser.add_argument("--to-address", required=True)
     send_parser.add_argument("--from-address")
@@ -216,6 +268,75 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--workflow-id")
     handoff_parser.add_argument("--idempotency-key")
     handoff_parser.add_argument("--headers-json", help="headers JSON object")
+
+    typed_send_parser = subparsers.add_parser(
+        "typed-send",
+        parents=[common],
+        help="execute one typed mailbox-language send envelope without hand-writing envelope JSON",
+    )
+    typed_send_parser.add_argument("--to-address", required=True)
+    typed_send_parser.add_argument("--from-address")
+    typed_send_parser.add_argument("--subject")
+    typed_send_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    typed_send_parser.add_argument("--message", required=True, help="message name within the protocol")
+    typed_send_parser.add_argument("--thread-id", help="existing thread id; omit to create a new typed thread")
+    typed_send_parser.add_argument("--reply-to-address")
+    typed_send_parser.add_argument("--correlation-id")
+    typed_send_parser.add_argument("--workflow-id")
+    typed_send_parser.add_argument("--idempotency-key")
+    typed_send_parser.add_argument("--deliver-after-seconds", type=int, default=0)
+    typed_send_parser.add_argument("--expires-in-seconds", type=int)
+    typed_send_parser.add_argument("--max-attempts", type=int, default=8)
+    typed_send_parser.add_argument("--payload-json", help="typed payload JSON object")
+    typed_send_parser.add_argument("--payload-file", help="read typed payload JSON object from file")
+    typed_send_parser.add_argument("--headers-json", help="headers JSON object")
+    typed_send_parser.add_argument("--wire-message-type", help="optional transport message_type override")
+    typed_send_parser.add_argument(
+        "--stdin-payload-mode",
+        choices=("auto", "json", "text"),
+        default="auto",
+        help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
+    )
+
+    typed_spawn_parser = subparsers.add_parser(
+        "typed-spawn",
+        parents=[common],
+        help="execute one typed mailbox-language spawn envelope without hand-writing envelope JSON",
+    )
+    typed_spawn_parser.add_argument("--to-address", required=True)
+    typed_spawn_parser.add_argument("--from-address")
+    typed_spawn_parser.add_argument("--subject")
+    typed_spawn_parser.add_argument("--from-thread-id", required=True)
+    typed_spawn_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    typed_spawn_parser.add_argument("--message", required=True, help="message name within the protocol")
+    typed_spawn_parser.add_argument("--reply-to-address")
+    typed_spawn_parser.add_argument("--correlation-id")
+    typed_spawn_parser.add_argument("--workflow-id")
+    typed_spawn_parser.add_argument("--idempotency-key")
+    typed_spawn_parser.add_argument("--deliver-after-seconds", type=int, default=0)
+    typed_spawn_parser.add_argument("--expires-in-seconds", type=int)
+    typed_spawn_parser.add_argument("--max-attempts", type=int, default=8)
+    typed_spawn_parser.add_argument("--payload-json", help="typed payload JSON object")
+    typed_spawn_parser.add_argument("--payload-file", help="read typed payload JSON object from file")
+    typed_spawn_parser.add_argument("--headers-json", help="headers JSON object")
+    typed_spawn_parser.add_argument("--wire-message-type", help="optional transport message_type override")
+    typed_spawn_parser.add_argument(
+        "--stdin-payload-mode",
+        choices=("auto", "json", "text"),
+        default="auto",
+        help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
+    )
+
+    typed_handoff_parser = subparsers.add_parser(
+        "typed-handoff",
+        parents=[common],
+        help="record one mailbox-language thread handoff without hand-writing event JSON",
+    )
+    typed_handoff_parser.add_argument("--from-thread-id", required=True)
+    typed_handoff_parser.add_argument("--to-thread-id", required=True)
+    typed_handoff_parser.add_argument("--actor")
+    typed_handoff_parser.add_argument("--metadata-json", help="handoff metadata JSON object")
+    typed_handoff_parser.add_argument("--metadata-file", help="read handoff metadata JSON object from file")
 
     reply_parser = subparsers.add_parser("reply", parents=[common], help="send a reply for one delivery")
     reply_parser.add_argument("--delivery-json", help="delivery JSON object or claim result JSON")
@@ -351,11 +472,38 @@ def _build_authenticated_client(args: argparse.Namespace) -> MailboxHTTPClient:
     timeout_option = _option_value(args, "timeout_seconds")
     timeout_seconds = timeout_option if timeout_option is not None else _resolve_timeout_seconds()
     token = auth_input["token"]
+    client_config = _load_client_config_defaults()
+    configured_role = _optional_env_str("MAILBOX_ROLE") or _optional_config_str(client_config, "role")
+    file_config_role = _optional_config_str(client_config, "role")
+    configured_roles = tuple(
+        _merge_unique_strings(
+            _split_csv(os.environ.get("MAILBOX_ROLES")),
+            [configured_role] if configured_role else [],
+            _optional_config_str_list(client_config, "roles"),
+            [file_config_role] if file_config_role else [],
+        )
+    )
 
     client = MailboxHTTPClient(
         MailboxClientConfig(
             base_url=base_url,
             token=token,
+            from_address=_optional_env_str("MAILBOX_FROM_ADDRESS") or _optional_config_str(client_config, "from_address"),
+            inbox_address=_optional_env_str("MAILBOX_INBOX_ADDRESS") or _optional_config_str(
+                client_config, "inbox_address"
+            ),
+            project_id=_optional_env_str("MAILBOX_PROJECT_ID") or _optional_config_str(client_config, "project_id"),
+            role=configured_role,
+            roles=configured_roles,
+            session=_optional_env_str("MAILBOX_SESSION") or _optional_config_str(client_config, "session"),
+            agent_name=_optional_env_str("MAILBOX_AGENT_NAME") or _optional_config_str(client_config, "agent_name"),
+            local_part=_optional_env_str("MAILBOX_LOCAL_PART") or _optional_config_str(client_config, "local_part"),
+            mailbox_type=_optional_env_str("MAILBOX_MAILBOX_TYPE") or _optional_config_str(
+                client_config, "mailbox_type"
+            ),
+            consumer_id=_optional_env_str("MAILBOX_CONSUMER_ID") or _optional_config_str(
+                client_config, "consumer_id"
+            ),
             timeout_seconds=timeout_seconds,
         )
     )
@@ -400,6 +548,31 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             to_address=args.to_address,
             limit=args.limit,
         )
+    if args.command == "register-protocol":
+        return {
+            "ok": True,
+            "protocol": client.register_protocol(
+                protocol=args.protocol,
+                schema=_load_optional_json_object(
+                    json_text=args.schema_json,
+                    file_path=args.schema_file,
+                    label="schema",
+                ),
+            ),
+        }
+    if args.command == "list-protocols":
+        return {"ok": True, "protocols": client.list_protocols()}
+    if args.command == "set-mailbox-protocols":
+        return {
+            "ok": True,
+            "bindings": client.set_mailbox_protocols(
+                address=args.address,
+                accepts=_split_csv(args.accepts),
+                default_protocol=args.default_protocol,
+            ),
+        }
+    if args.command == "get-mailbox-protocols":
+        return {"ok": True, "bindings": client.get_mailbox_protocols(address=args.address)}
     if args.command == "retry-queue":
         return client.retry_queue(
             to_address=args.to_address,
@@ -443,6 +616,64 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             idempotency_key=args.idempotency_key,
             headers=headers,
         )
+    if args.command == "typed-send":
+        auth_source = getattr(args, "_auth_source", None)
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        result = client.typed_send(
+            to_address=args.to_address,
+            from_address=args.from_address,
+            subject=args.subject,
+            thread_id=args.thread_id,
+            protocol=args.protocol,
+            message=args.message,
+            payload=_load_send_payload(args, allow_stdin=auth_source != "stdin"),
+            reply_to_address=args.reply_to_address,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
+            deliver_after_seconds=args.deliver_after_seconds,
+            expires_in_seconds=args.expires_in_seconds,
+            max_attempts=args.max_attempts,
+            wire_message_type=args.wire_message_type,
+        )
+        return {"ok": True, **result}
+    if args.command == "typed-spawn":
+        auth_source = getattr(args, "_auth_source", None)
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        result = client.typed_spawn(
+            to_address=args.to_address,
+            from_thread_id=args.from_thread_id,
+            from_address=args.from_address,
+            subject=args.subject,
+            protocol=args.protocol,
+            message=args.message,
+            payload=_load_send_payload(args, allow_stdin=auth_source != "stdin"),
+            reply_to_address=args.reply_to_address,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
+            deliver_after_seconds=args.deliver_after_seconds,
+            expires_in_seconds=args.expires_in_seconds,
+            max_attempts=args.max_attempts,
+            wire_message_type=args.wire_message_type,
+        )
+        return {"ok": True, **result}
+    if args.command == "typed-handoff":
+        return {
+            "ok": True,
+            "handoff": client.typed_handoff(
+                from_thread_id=args.from_thread_id,
+                to_thread_id=args.to_thread_id,
+                actor=args.actor,
+                metadata=_load_optional_json_object(
+                    json_text=args.metadata_json,
+                    file_path=args.metadata_file,
+                    label="metadata",
+                ),
+            ),
+        }
     if args.command == "reply":
         auth_source = getattr(args, "_auth_source", None)
         delivery = _load_reply_delivery(args, allow_stdin=auth_source != "stdin")
@@ -621,6 +852,7 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
     admin_token_option = _option_value(args, "admin_token")
     token_option = _option_value(args, "token")
     token_file_option = _option_value(args, "token_file")
+    prefers_admin_env = _command_prefers_admin_bootstrap_auth(getattr(args, "command", None))
     if admin_token_option and (token_option or token_file_option):
         raise ValueError("provide either --admin-token or --token/--token-file, not both")
     if admin_token_option:
@@ -636,6 +868,11 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
         result["source"] = "file"
         setattr(args, "_auth_source", "file")
         return result
+    env_admin_token = (os.environ.get("MAILBOX_ADMIN_TOKEN") or "").strip()
+    if prefers_admin_env and env_admin_token:
+        result = {"token": env_admin_token, "source": "env_admin"}
+        setattr(args, "_auth_source", "env_admin")
+        return result
     env_session_token = (os.environ.get("MAILBOX_SESSION_TOKEN") or "").strip()
     if env_session_token:
         result = {"token": env_session_token, "source": "env_session"}
@@ -646,7 +883,6 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
         result = {"token": env_token, "source": "env"}
         setattr(args, "_auth_source", "env")
         return result
-    env_admin_token = (os.environ.get("MAILBOX_ADMIN_TOKEN") or "").strip()
     if env_admin_token:
         result = {"token": env_admin_token, "source": "env_admin"}
         setattr(args, "_auth_source", "env_admin")
@@ -666,6 +902,10 @@ def _option_value(args: argparse.Namespace, name: str) -> Any:
     if local_value is not None and local_value != "" and local_value is not False:
         return local_value
     return getattr(args, f"global_{name}", None)
+
+
+def _command_prefers_admin_bootstrap_auth(command: str | None) -> bool:
+    return command in _ADMIN_BOOTSTRAP_COMMANDS
 
 
 def _pretty_enabled(args: argparse.Namespace) -> bool:
@@ -871,6 +1111,21 @@ def _payload_from_stdin(raw_text: str, *, mode: str) -> dict[str, Any]:
     return payload
 
 
+def _merge_unique_strings(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, str):
+                continue
+            stripped = item.strip()
+            if not stripped or stripped in seen:
+                continue
+            seen.add(stripped)
+            result.append(stripped)
+    return result
+
+
 def _merge_roles(repeated_roles: list[str], csv_roles: str | None) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -905,6 +1160,55 @@ def _resolve_config_path() -> Path | None:
         return Path(config_path)
     default_path = Path.cwd() / "mailbox_client.json"
     return default_path if default_path.exists() else None
+
+
+def _load_client_config_defaults() -> dict[str, Any]:
+    config_path = _resolve_config_path()
+    if config_path is None or not config_path.exists():
+        return {}
+    try:
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in config file: {config_path}") from exc
+    if not isinstance(config_data, dict):
+        raise ValueError(f"config file must decode to a JSON object: {config_path}")
+    return config_data
+
+
+def _optional_env_str(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optional_config_str(config: dict[str, Any], key: str) -> str | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"config file field {key} must be a string")
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optional_config_str_list(config: dict[str, Any], key: str) -> list[str]:
+    value = config.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _split_csv(value)
+    if not isinstance(value, list):
+        raise ValueError(f"config file field {key} must be a string or list of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"config file field {key} must contain only strings")
+        stripped = item.strip()
+        if stripped:
+            result.append(stripped)
+    return result
 
 
 def _read_text(path: Path) -> str:

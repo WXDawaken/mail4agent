@@ -157,7 +157,8 @@ Notes:
 
 - This phase gives us a stable programmatic API.
 - It also acts as the contract for the future stdio interpreter.
-- The current bounded implementation already exposes admin-only execution routes for normalized envelopes and handoff events; the next step is to turn that into a cleaner typed client surface instead of keeping it admin-only.
+- The current bounded implementation now exposes that surface through `codex_mailbox_client.py` and `client.py`: protocol registry helpers plus `typed-send` / `typed-spawn` / `typed-handoff` now lower directly into normalized envelope and handoff artifacts without requiring raw admin JSON.
+- This first typed surface is still admin-backed for now. The next step is the separate native-stdio interpreter, not server-side DSL parsing.
 
 ## Phase 3: Stdio Interpreter MVP
 

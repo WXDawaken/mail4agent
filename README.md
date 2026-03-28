@@ -9,7 +9,7 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 - Protects admin routes with either an env admin token or admin username/password
 - Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
-- Includes a browser admin page and a `client.py` CLI for login/send/handoff/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume
+- Includes a browser admin page and a `client.py` CLI for login/send/handoff/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume plus the first typed-runtime protocol/envelope helpers
 - Includes repo-local dogfood helpers for medium planner/reviewer runs, a high-effort operator run, and a minimal operator oncall supervisor/server path
 - Stays dependency-free: Python standard library only
 
@@ -285,6 +285,17 @@ python .\client.py whoami
 python .\client.py send --admin-token $env:MAILBOX_ADMIN_TOKEN --from-address operator@mail4agent.codex --to-address shadow@mail4agent.ops --payload-json '{"task":"admin-direct"}'
 ```
 
+Register a typed protocol and execute a typed runtime envelope without hand-writing the raw envelope JSON:
+
+```powershell
+$env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
+python .\client.py register-protocol --protocol Orders/v2 --schema-file .\orders.protocol.json
+python .\client.py set-mailbox-protocols --address reviewer@mail4agent.codex --accepts Orders/v2
+python .\client.py typed-send --to-address reviewer@mail4agent.codex --from-address operator@mail4agent.codex --protocol Orders/v2 --message QuoteReq --payload-json '{"order_id":"123","items":["sku-1"]}'
+```
+
+The typed commands currently target the admin-backed IR/runtime surface: `register-protocol`, `list-protocols`, `set-mailbox-protocols`, `get-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff`. When both `MAILBOX_SESSION_TOKEN` and `MAILBOX_ADMIN_TOKEN` are present in the environment, these typed commands automatically prefer the admin token unless you pass an explicit `--token` or `--admin-token`.
+
 Reply and ack:
 
 ```powershell
@@ -446,3 +457,4 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Rol
 - `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token
+- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; use `register-protocol`, `set-mailbox-protocols`, `typed-send`, `typed-spawn`, and `typed-handoff` as the contract that a future native-stdio DSL interpreter will target
