@@ -12,6 +12,8 @@ Implement the runtime core of [`mailbox_language_spec_v0_2.md`](E:\agent_misc\ma
 - Treat the textual mailbox language as a separate interpreter/compiler layer.
 - Lower DSL programs into a typed IR close to the spec's `MessageEnvelope` and `HandoffEvent`.
 - Make the first interpreter usable over native stdio streams so it can act as a pipe-friendly tool in local agent workflows.
+- Treat JSON IR plus JSON-schema-like protocol/runtime artifacts as the primary backend contract.
+- Treat the textual DSL as optional frontend sugar rather than a required integration surface.
 
 ## Why IR-First Fits This Repo
 
@@ -161,6 +163,7 @@ Notes:
 - This first typed surface is still admin-backed for now. The next step is the separate native-stdio interpreter, not server-side DSL parsing.
 - The protocol/runtime rules are now also shared in a dedicated module (`mailbox_language_runtime.py`) instead of living only inside `sqlite_mailbox.py`; the future interpreter can reuse the same protocol-ref normalization, schema checks, payload checks, and transition resolution logic.
 - Those shared runtime rules now also support explicit protocol compilation plus local disk caching through `compile_protocol_runtime_schema(...)` and `mailbox_language_cache.py`, so a future interpreter can cache static protocol validation artifacts locally without turning mailbox/thread/runtime checks into cached truth.
+- This typed IR surface is now the intended mainline backend. Future serialization/frontend work should continue lowering into these same artifacts instead of redefining runtime truth around the DSL itself.
 
 ## Phase 3: Stdio Interpreter MVP
 
@@ -194,7 +197,7 @@ Notes:
 - That same source layer now also honors bounded `let` type annotations and aliases: literal/value bindings can be checked against `String`, `Bool`, `Int`, `Float`, or `[T]`, and thread-producing expressions can be checked against `thread<Protocol/version>` plus simple thread-handle aliases.
 - The value layer now also supports bounded nested object literals (`{ field: expr; ... }`) so structured payload fragments can be composed locally and lowered into the same typed runtime artifacts without introducing functions, control flow, or a general-purpose expression language.
 - That interpreter path now also emits bounded source diagnostics for `dsl_program` failures: parse/check errors carry `source_phase` plus line/column metadata, and payload field type mismatches are anchored to the relevant source field instead of only returning a free-form string.
-- The next step after this MVP is broader DSL coverage and fuller declaration/type diagnostics, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
+- The next step after this MVP does not need to be broader DSL coverage by default. The current working decision is to keep JSON IR as the mainline backend, preserve the DSL as an optional frontend, and only expand source syntax when it clearly improves human or tool ergonomics.
 
 ## Phase 4: Full Checker and Source-Level UX
 
@@ -214,6 +217,7 @@ Status:
 - A first bounded `let` checker is now also implemented: value bindings, thread-handle annotations, and thread aliases are resolved locally during lowering, while live mailbox routing and thread ids are still only assigned by the runtime.
 - A first bounded structured-value layer is now also implemented: nested object literals survive lowering and stdio `run`, which makes richer payload assembly possible without widening the DSL into a general-purpose language.
 - A first bounded source-diagnostics layer is now also implemented: parser and checker errors can now surface `source_phase` plus line/column metadata through `MailboxRuntimeError.details` and the stdio JSON responses, which is enough for pipe-friendly editor/tool integration without moving syntax handling into the mailbox server.
+- The current product decision is that one-to-one or otherwise simple mailbox communication should not require DSL orchestration. If JSON IR plus protocol/runtime schemas are sufficient, that path should stay primary and the DSL should remain optional.
 
 ## Difficulty Assessment
 

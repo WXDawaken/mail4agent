@@ -320,6 +320,7 @@ $env:MAILBOX_ADMIN_TOKEN = "dev-admin-token"
 ```
 
 It now also supports a first textual DSL artifact, `dsl_program`, on top of the same shell. `check` and `lower` parse source declarations and statements into typed IR, while `run` sequentially registers protocols, configures mailbox protocol bindings, and executes lowered send/spawn/handoff operations through the existing admin-backed runtime.
+The current product direction is that JSON IR remains the primary backend contract, while `dsl_program` is an optional source-level frontend for humans or tools that prefer it. You do not need the DSL to use the typed runtime.
 
 Example `dsl_program` request:
 
@@ -355,6 +356,7 @@ For `dsl_program`, use:
 - `artifact.from_address` to provide the sender address used by lowered send/spawn operations
 
 `mailbox_language_stdio.py` currently supports `check`, `lower`, and `run` for five artifact kinds: `protocol_schema`, `mailbox_binding`, `message_envelope`, `handoff_event`, and `dsl_program`. It emits structured diagnostics instead of Python tracebacks, and `run` reuses the same typed admin routes and client helpers as `client.py`.
+In practice, `protocol_schema` plus `message_envelope` / `handoff_event` should be treated as the stable mainline surface; `dsl_program` remains a thin optional frontend that lowers into that same backend contract.
 
 Reply and ack:
 
@@ -517,4 +519,4 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Rol
 - `client.py retry-queue` exposes retry-pending deliveries with attempt counts, next retry time, and a short last-error summary
 - `client.py login --output token` always prints only the token, so it works well with env assignment and redirection
 - After a server restart, in-memory agent session tokens are invalid; run `client.py login` again to get a fresh session token
-- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; `mailbox_language_stdio.py` now provides both the JSONL interpreter shell and the first source-DSL lowering layer on top of that same contract, and the next step is broader syntax coverage plus stronger static diagnostics rather than changing the mailbox server
+- The first typed-runtime CLI surface is intentionally IR-first and still admin-backed; `mailbox_language_stdio.py` now provides both the JSONL interpreter shell and a bounded source-DSL lowering layer on top of that same contract. The mainline path stays JSON IR plus runtime/schema validation, while further DSL expansion remains optional.

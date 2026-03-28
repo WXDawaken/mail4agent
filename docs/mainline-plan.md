@@ -39,6 +39,7 @@
 - The first standalone mailbox-language stdio interpreter shell now also exists in `mailbox_language_stdio.py`: it speaks JSON lines over stdin/stdout, supports `check` / `lower` / `run` for `protocol_schema`, `mailbox_binding`, `message_envelope`, `handoff_event`, and a first `dsl_program` source artifact, reuses the local protocol compile cache, and calls the same typed admin-backed runtime helpers as `client.py` instead of teaching the mailbox server to parse DSL text directly.
 - A new shared source parser/checker module, `mailbox_language_source.py`, now lowers a first bounded textual DSL slice into typed runtime artifacts. The current supported source grammar covers `protocol`, `mailbox`, bounded `let` bindings, nested object values, `send`, `send text`, `spawn`, and `handoff`, still keeps mailbox-address resolution and runtime truth outside the parser layer, and now also rejects bounded primitive/list payload type mismatches plus `let` annotation mismatches during `check` / `lower` instead of waiting for live runtime execution.
 - That same DSL layer now also emits bounded source diagnostics: `MailboxRuntimeError` carries optional details, `mailbox_language_source.py` annotates parse/check failures with `source_phase` plus line/column metadata, and `mailbox_language_stdio.py` forwards those fields in structured JSON responses so editor or pipe consumers can distinguish parse vs checker failures without scraping the error string.
+- The current mailbox-language product decision is now explicit: JSON IR plus protocol/runtime schema artifacts are the primary backend surface, while the textual DSL stays as an optional frontend that lowers into that same contract. Simple mailbox communication should not require DSL orchestration.
 
 ## Milestones
 
@@ -73,6 +74,7 @@
 - Keep the first dogfood smoke bounded to medium-effort planner/reviewer runs, but allow a separate high-effort operator lane for bounded repo-local update tasks driven by `dogfood_smoke_bootstrap.py` plus `launch_dogfood_agent.ps1`.
 - Keep `mailbox` and `oncall` logically separable even while they live in the same repo; prefer explicit module and process boundaries over embedding all supervision logic into the mailbox server itself.
 - Keep the mailbox server DSL-agnostic; implement `mailbox_language_spec` via typed IR/runtime changes first, and add the textual language as a separate interpreter with native stdio support.
+- Keep JSON IR as the mailbox-language mainline backend contract; treat the current DSL as optional sugar and only expand it when it provides clear ergonomic value over direct JSON artifacts.
 
 ## Open Questions
 
