@@ -112,6 +112,31 @@ Notes:
 - This is the highest-value first slice.
 - It reuses almost all of the current mailbox server infrastructure.
 
+Current normalized protocol-schema artifact expected by the runtime:
+
+```json
+{
+  "states": ["Init", "AwaitDecision", "Done"],
+  "start": "Init",
+  "messages": {
+    "QuoteReq": {
+      "required": ["order_id", "items"],
+      "optional": [],
+      "allow_additional_fields": false
+    },
+    "Approve": {
+      "required": ["order_id"]
+    }
+  },
+  "transitions": [
+    { "message": "QuoteReq", "from": "Init", "to": "AwaitDecision" },
+    { "message": "Approve", "from": "AwaitDecision", "to": "Done" }
+  ]
+}
+```
+
+This is intentionally lower-level than the textual DSL. The future interpreter can compile source declarations into this artifact before calling the typed envelope runtime.
+
 ## Phase 2: Typed HTTP/CLI Surface
 
 Goal: make the IR callable without requiring the future DSL interpreter.
@@ -132,6 +157,7 @@ Notes:
 
 - This phase gives us a stable programmatic API.
 - It also acts as the contract for the future stdio interpreter.
+- The current bounded implementation already exposes admin-only execution routes for normalized envelopes and handoff events; the next step is to turn that into a cleaner typed client surface instead of keeping it admin-only.
 
 ## Phase 3: Stdio Interpreter MVP
 

@@ -112,6 +112,31 @@ def format_protocol_ref(protocol_name: str, protocol_version: str) -> str:
     )
 
 
+def _require_dict_string(data: dict[str, Any], key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_dict_string(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string when provided")
+    return value.strip()
+
+
+def _optional_dict_object(data: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a JSON object when provided")
+    return value
+
+
 def unique_preserving_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -188,6 +213,12 @@ class MailboxRef:
     project_id: str
     harness_id: str
     mailbox_type: str
+
+
+class MailboxRuntimeError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        self.code = str(code)
+        super().__init__(message)
 
 
 SCHEMA_SQL = """
@@ -777,6 +808,225 @@ class SQLiteMailbox:
             payload["outgoing_handoffs"] = self._load_thread_handoffs(conn, thread_id=thread_id, direction="outgoing")
             payload["incoming_handoffs"] = self._load_thread_handoffs(conn, thread_id=thread_id, direction="incoming")
         return payload
+
+    def _load_protocol_runtime_schema(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        protocol_name: str,
+        protocol_version: str,
+    ) -> dict[str, Any]:
+        normalized_name = normalize_protocol_component(protocol_name, "protocol_name")
+        normalized_version = normalize_protocol_component(protocol_version, "protocol_version")
+        row = conn.execute(
+            """
+            SELECT schema_json
+            FROM mailbox_protocols
+            WHERE protocol_name = ? AND protocol_version = ?
+            """,
+            (normalized_name, normalized_version),
+        ).fetchone()
+        if row is None:
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_UNKNOWN",
+                f"protocol not registered: {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        if not row["schema_json"]:
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol schema missing for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        schema = json.loads(row["schema_json"])
+        if not isinstance(schema, dict):
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol schema must be a JSON object for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        states = schema.get("states")
+        start_state = schema.get("start")
+        messages = schema.get("messages")
+        transitions = schema.get("transitions")
+        if not isinstance(states, list) or not all(isinstance(item, str) and item.strip() for item in states):
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol states missing or invalid for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        if not isinstance(start_state, str) or not start_state.strip():
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol start state missing for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        if start_state not in states:
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol start state {start_state!r} is not declared for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        if not isinstance(messages, dict):
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol messages missing or invalid for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        if not isinstance(transitions, list):
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"protocol transitions missing or invalid for {format_protocol_ref(normalized_name, normalized_version)}",
+            )
+        return schema
+
+    def _validate_message_payload(
+        self,
+        *,
+        protocol_ref: str,
+        msg_type: str,
+        payload: dict[str, Any],
+        message_schema: Any,
+    ) -> None:
+        if message_schema is None:
+            return
+        if not isinstance(message_schema, dict):
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"message schema for {protocol_ref}.{msg_type} must be a JSON object or null",
+            )
+        required_fields: set[str] = set()
+        optional_fields: set[str] = set()
+        if "required" in message_schema:
+            required = message_schema.get("required")
+            if not isinstance(required, list) or not all(isinstance(item, str) and item.strip() for item in required):
+                raise MailboxRuntimeError(
+                    "E_PROTOCOL_SCHEMA_INVALID",
+                    f"message required fields for {protocol_ref}.{msg_type} must be a list of strings",
+                )
+            required_fields.update(item.strip() for item in required)
+        if "optional" in message_schema:
+            optional = message_schema.get("optional")
+            if not isinstance(optional, list) or not all(isinstance(item, str) and item.strip() for item in optional):
+                raise MailboxRuntimeError(
+                    "E_PROTOCOL_SCHEMA_INVALID",
+                    f"message optional fields for {protocol_ref}.{msg_type} must be a list of strings",
+                )
+            optional_fields.update(item.strip() for item in optional)
+        if "fields" in message_schema:
+            fields = message_schema.get("fields")
+            if not isinstance(fields, dict):
+                raise MailboxRuntimeError(
+                    "E_PROTOCOL_SCHEMA_INVALID",
+                    f"message fields for {protocol_ref}.{msg_type} must be a JSON object",
+                )
+            for field_name, field_schema in fields.items():
+                if not isinstance(field_name, str) or not field_name.strip():
+                    raise MailboxRuntimeError(
+                        "E_PROTOCOL_SCHEMA_INVALID",
+                        f"message field names for {protocol_ref}.{msg_type} must be non-empty strings",
+                    )
+                normalized_field_name = field_name.strip()
+                if field_schema is None:
+                    optional_fields.add(normalized_field_name)
+                    continue
+                if not isinstance(field_schema, dict):
+                    raise MailboxRuntimeError(
+                        "E_PROTOCOL_SCHEMA_INVALID",
+                        f"message field schema for {protocol_ref}.{msg_type}.{normalized_field_name} must be an object or null",
+                    )
+                if bool(field_schema.get("required")):
+                    required_fields.add(normalized_field_name)
+                else:
+                    optional_fields.add(normalized_field_name)
+
+        missing_fields = sorted(field for field in required_fields if field not in payload)
+        if missing_fields:
+            raise MailboxRuntimeError(
+                "E_PAYLOAD_SCHEMA_INVALID",
+                f"payload missing required fields for {protocol_ref}.{msg_type}: {', '.join(missing_fields)}",
+            )
+
+        allow_additional_fields = bool(message_schema.get("allow_additional_fields", True))
+        if not allow_additional_fields:
+            allowed_fields = required_fields | optional_fields
+            extra_fields = sorted(key for key in payload.keys() if key not in allowed_fields)
+            if extra_fields:
+                raise MailboxRuntimeError(
+                    "E_PAYLOAD_SCHEMA_INVALID",
+                    f"payload has unexpected fields for {protocol_ref}.{msg_type}: {', '.join(extra_fields)}",
+                )
+
+    def _resolve_transition_target_state(
+        self,
+        *,
+        protocol_ref: str,
+        schema: dict[str, Any],
+        from_state: str,
+        msg_type: str,
+    ) -> str:
+        transitions = schema.get("transitions")
+        assert isinstance(transitions, list)
+        candidate_states: list[str] = []
+        for item in transitions:
+            if not isinstance(item, dict):
+                raise MailboxRuntimeError(
+                    "E_PROTOCOL_SCHEMA_INVALID",
+                    f"protocol transitions for {protocol_ref} must contain only objects",
+                )
+            if item.get("message") != msg_type or item.get("from") != from_state:
+                continue
+            to_state = item.get("to")
+            if not isinstance(to_state, str) or not to_state.strip():
+                raise MailboxRuntimeError(
+                    "E_PROTOCOL_SCHEMA_INVALID",
+                    f"protocol transition target for {protocol_ref}.{msg_type} from {from_state} is invalid",
+                )
+            candidate_states.append(to_state.strip())
+        if not candidate_states:
+            raise MailboxRuntimeError(
+                "E_STATE_TRANSITION_INVALID",
+                f"message {msg_type} is not valid from state {from_state} in {protocol_ref}",
+            )
+        if len(candidate_states) > 1:
+            raise MailboxRuntimeError(
+                "E_PROTOCOL_SCHEMA_INVALID",
+                f"message {msg_type} from state {from_state} is ambiguous in {protocol_ref}",
+            )
+        return candidate_states[0]
+
+    def _load_latest_message_id_for_thread(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        thread_id: str,
+    ) -> str | None:
+        row = conn.execute(
+            """
+            SELECT message_id
+            FROM messages
+            WHERE thread_id = ?
+            ORDER BY created_at DESC, message_id DESC
+            LIMIT 1
+            """,
+            (thread_id,),
+        ).fetchone()
+        return str(row["message_id"]) if row else None
+
+    def _mailbox_accepts_protocol(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mailbox_id: int,
+        protocol_name: str,
+        protocol_version: str,
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM mailbox_protocol_accepts mpa
+            JOIN mailbox_protocols mp ON mp.protocol_id = mpa.protocol_id
+            WHERE mpa.mailbox_id = ?
+              AND mp.protocol_name = ?
+              AND mp.protocol_version = ?
+            LIMIT 1
+            """,
+            (mailbox_id, protocol_name, protocol_version),
+        ).fetchone()
+        return row is not None
 
     def _load_message(self, conn: sqlite3.Connection, message_id: str) -> Optional[dict[str, Any]]:
         row = conn.execute(
@@ -2701,6 +2951,209 @@ class SQLiteMailbox:
             except Exception:
                 conn.rollback()
                 raise
+
+    def execute_message_envelope(
+        self,
+        *,
+        from_address: str,
+        envelope: dict[str, Any],
+        subject: str | None = None,
+        reply_to_address: str | None = None,
+        correlation_id: str | None = None,
+        workflow_id: str | None = None,
+        idempotency_key: str | None = None,
+        headers: dict[str, Any] | None = None,
+        deliver_after_seconds: int = 0,
+        expires_in_seconds: int | None = None,
+        max_attempts: int = 8,
+        bypass_routing: bool = False,
+        message_type: str | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(envelope, dict):
+            raise ValueError("envelope must be a JSON object")
+        op = str(envelope.get("op") or "").strip()
+        if op not in {"send", "spawn"}:
+            raise ValueError("envelope.op must be one of: send, spawn")
+        target_kind = str(envelope.get("target_kind") or "").strip()
+        if target_kind not in {"mailbox", "thread"}:
+            raise ValueError("envelope.target_kind must be one of: mailbox, thread")
+        if op == "spawn" and target_kind != "mailbox":
+            raise ValueError("spawn envelopes must target a mailbox")
+
+        protocol_name = normalize_protocol_component(_require_dict_string(envelope, "protocol"), "protocol_name")
+        protocol_version = normalize_protocol_component(_require_dict_string(envelope, "version"), "protocol_version")
+        msg_type = normalize_protocol_component(_require_dict_string(envelope, "msg_type"), "msg_type")
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("envelope.payload must be a JSON object")
+        protocol_ref = format_protocol_ref(protocol_name, protocol_version)
+        effective_message_type = message_type or f"{protocol_ref}.{msg_type}"
+        parent_thread_id = _optional_dict_string(envelope, "parent_thread_id")
+        if op == "spawn" and parent_thread_id is None:
+            raise ValueError("spawn envelopes require parent_thread_id")
+        if op != "spawn" and parent_thread_id is not None:
+            raise ValueError("parent_thread_id is only valid for spawn envelopes")
+
+        with self.connect() as conn:
+            schema = self._load_protocol_runtime_schema(
+                conn,
+                protocol_name=protocol_name,
+                protocol_version=protocol_version,
+            )
+            messages = schema.get("messages")
+            assert isinstance(messages, dict)
+            if msg_type not in messages:
+                raise MailboxRuntimeError(
+                    "E_MESSAGE_UNKNOWN",
+                    f"message {msg_type} is not declared in {protocol_ref}",
+                )
+            self._validate_message_payload(
+                protocol_ref=protocol_ref,
+                msg_type=msg_type,
+                payload=payload,
+                message_schema=messages[msg_type],
+            )
+            start_state = str(schema["start"])
+
+            if target_kind == "mailbox":
+                mailbox_address = (
+                    _optional_dict_string(envelope, "mailbox_address")
+                    or _optional_dict_string(envelope, "to_address")
+                    or _optional_dict_string(envelope, "mailbox")
+                )
+                if mailbox_address is None:
+                    raise ValueError("mailbox-target envelopes require mailbox_address, to_address, or mailbox")
+                mailbox = self.resolve_address(mailbox_address)
+                if not self._mailbox_accepts_protocol(
+                    conn,
+                    mailbox_id=mailbox.mailbox_id,
+                    protocol_name=protocol_name,
+                    protocol_version=protocol_version,
+                ):
+                    raise MailboxRuntimeError(
+                        "E_MAILBOX_PROTOCOL_NOT_ACCEPTED",
+                        f"mailbox {mailbox.address} does not accept {protocol_ref}",
+                    )
+                next_state = self._resolve_transition_target_state(
+                    protocol_ref=protocol_ref,
+                    schema=schema,
+                    from_state=start_state,
+                    msg_type=msg_type,
+                )
+            else:
+                target_thread_id = _optional_dict_string(envelope, "thread_id")
+                if target_thread_id is None:
+                    raise ValueError("thread-target envelopes require thread_id")
+                thread_row = conn.execute(
+                    """
+                    SELECT protocol_name, protocol_version, state_name
+                    FROM mailbox_threads
+                    WHERE thread_id = ?
+                    """,
+                    (target_thread_id,),
+                ).fetchone()
+                if not self._thread_has_messages(conn, target_thread_id):
+                    raise MailboxRuntimeError("E_THREAD_NOT_FOUND", f"thread not found: {target_thread_id}")
+                if thread_row is None:
+                    self._ensure_thread_runtime_row(conn, target_thread_id, require_existing_message=True)
+                    thread_row = conn.execute(
+                        """
+                        SELECT protocol_name, protocol_version, state_name
+                        FROM mailbox_threads
+                        WHERE thread_id = ?
+                        """,
+                        (target_thread_id,),
+                    ).fetchone()
+                assert thread_row is not None
+                bound_protocol_name = thread_row["protocol_name"]
+                bound_protocol_version = thread_row["protocol_version"]
+                if not bound_protocol_name or not bound_protocol_version:
+                    raise MailboxRuntimeError(
+                        "E_THREAD_PROTOCOL_UNBOUND",
+                        f"thread {target_thread_id} does not have a bound protocol",
+                    )
+                if bound_protocol_name != protocol_name or bound_protocol_version != protocol_version:
+                    raise MailboxRuntimeError(
+                        "E_THREAD_PROTOCOL_MISMATCH",
+                        f"thread {target_thread_id} is bound to {format_protocol_ref(bound_protocol_name, bound_protocol_version)}, not {protocol_ref}",
+                    )
+                current_state = thread_row["state_name"] or start_state
+                next_state = self._resolve_transition_target_state(
+                    protocol_ref=protocol_ref,
+                    schema=schema,
+                    from_state=str(current_state),
+                    msg_type=msg_type,
+                )
+                mailbox_address = _optional_dict_string(envelope, "to_address")
+                if mailbox_address is None:
+                    raise ValueError("thread-target envelopes require to_address for mailbox delivery routing")
+                mailbox = self.resolve_address(mailbox_address)
+                target_thread_id = str(target_thread_id)
+
+        send_result = self.send(
+            from_address=from_address,
+            to_address=mailbox.address,
+            payload=payload,
+            subject=subject,
+            message_type=effective_message_type,
+            thread_id=None if target_kind == "mailbox" else target_thread_id,
+            in_reply_to_message_id=None
+            if target_kind == "mailbox"
+            else self.get_latest_thread_message_id(target_thread_id),
+            reply_to_address=reply_to_address,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            idempotency_key=idempotency_key,
+            headers=headers,
+            deliver_after_seconds=deliver_after_seconds,
+            expires_in_seconds=expires_in_seconds,
+            max_attempts=max_attempts,
+            bypass_routing=bypass_routing,
+            thread_protocol_name=protocol_name,
+            thread_protocol_version=protocol_version,
+            thread_state=next_state,
+            parent_thread_id=parent_thread_id if op == "spawn" else None,
+        )
+        thread_payload = self.get_thread(thread_id=str(send_result["thread_id"]))
+        return {
+            "op": op,
+            "target_kind": target_kind,
+            "protocol": protocol_ref,
+            "protocol_name": protocol_name,
+            "protocol_version": protocol_version,
+            "msg_type": msg_type,
+            "mailbox_address": mailbox.address,
+            "state": next_state,
+            "message_type": effective_message_type,
+            "parent_thread_id": parent_thread_id if op == "spawn" else None,
+            "thread": thread_payload,
+            **send_result,
+        }
+
+    def execute_handoff_event(
+        self,
+        *,
+        event: dict[str, Any],
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(event, dict):
+            raise ValueError("event must be a JSON object")
+        op = str(event.get("op") or "").strip()
+        if op and op != "handoff":
+            raise ValueError("handoff event op must be 'handoff' when provided")
+        return self.record_thread_handoff(
+            from_thread_id=_require_dict_string(event, "from_thread_id"),
+            to_thread_id=_require_dict_string(event, "to_thread_id"),
+            actor=actor if actor is not None else _optional_dict_string(event, "actor"),
+            metadata=_optional_dict_object(event, "metadata"),
+        )
+
+    def get_latest_thread_message_id(self, thread_id: str) -> str | None:
+        with self.connect() as conn:
+            normalized_thread_id = self._resolve_thread_id(conn, thread_id=thread_id)
+            if normalized_thread_id is None:
+                return None
+            return self._load_latest_message_id_for_thread(conn, thread_id=normalized_thread_id)
 
     def claim_any(
         self,

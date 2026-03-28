@@ -39,6 +39,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from sqlite_mailbox import (
+    MailboxRuntimeError,
     SQLiteMailbox,
     canonicalize_address,
     normalize_claim_serialization_scope,
@@ -687,6 +688,37 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             )
             return 200, {"ok": True, "handoff": handoff}
 
+        if method == "POST" and path == "/admin/execute_message_envelope":
+            envelope = _optional_dict(body, "envelope")
+            if envelope is None:
+                raise ValueError("missing required field: envelope")
+            result = self.mailbox.execute_message_envelope(
+                from_address=_require(body, "from_address", str),
+                envelope=envelope,
+                subject=_optional(body, "subject", str),
+                reply_to_address=_optional(body, "reply_to_address", str),
+                correlation_id=_optional(body, "correlation_id", str),
+                workflow_id=_optional(body, "workflow_id", str),
+                idempotency_key=_optional(body, "idempotency_key", str),
+                headers=_optional_dict(body, "headers"),
+                deliver_after_seconds=int(body.get("deliver_after_seconds", 0)),
+                expires_in_seconds=_optional_int(body, "expires_in_seconds"),
+                max_attempts=int(body.get("max_attempts", 8)),
+                bypass_routing=bool(body.get("bypass_routing", False)),
+                message_type=_optional(body, "message_type", str),
+            )
+            return 200, {"ok": True, "result": result}
+
+        if method == "POST" and path == "/admin/execute_handoff_event":
+            event = _optional_dict(body, "event")
+            if event is None:
+                raise ValueError("missing required field: event")
+            result = self.mailbox.execute_handoff_event(
+                event=event,
+                actor=_optional(body, "actor", str),
+            )
+            return 200, {"ok": True, "handoff": result}
+
         if method == "GET" and path == "/admin/list_harness_tokens":
             harness_id = (query.get("harness_id") or [None])[0]
             if not harness_id:
@@ -1072,6 +1104,9 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             status, payload = self._dispatch(method, parsed.path, body, parse_qs(parsed.query))
         except ValueError as exc:
             self._json_response(400, {"ok": False, "error": str(exc)})
+            return
+        except MailboxRuntimeError as exc:
+            self._json_response(400, {"ok": False, "error": str(exc), "error_code": exc.code})
             return
         except AuthenticationError as exc:
             self._json_response(401, {"ok": False, "error": str(exc)})

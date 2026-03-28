@@ -32,6 +32,7 @@
 - A follow-on implementation note now also exists in `docs\mailbox-oncall-implementation-plan-20260328.md`; it maps the current codebase into mailbox-side runtime, oncall supervision, and execution-backend seams, and recommends refactoring toward `oncall_supervisor.py` plus `oncall_registry.py` before adding sticky per-thread agents.
 - A mailbox-language implementation note now also exists in `docs\mailbox-language-ir-first-plan-20260328.md`; it evaluates `mailbox_language_spec_v0_2.md` against the current repo, recommends an IR-first rollout inside the mailbox server, and keeps the textual DSL as a separate stdio-capable interpreter layer.
 - The first mailbox-language runtime foundation is now also implemented in the mailbox server: protocol registry rows, mailbox `accepts/default` bindings, per-thread protocol/state metadata, admin-recorded thread handoff relations, and thread inspection surfaces now exist without requiring the server to parse the textual DSL.
+- A first typed envelope execution surface now also exists above that foundation: the mailbox server can execute normalized `send` / `spawn` message envelopes plus handoff events through protocol-aware runtime validation, including mailbox-accepts checks, protocol-match checks, transition checks, payload-shape checks, and structured runtime error codes.
 
 ## Milestones
 
