@@ -2,18 +2,21 @@
 
 ## Goal
 
-- Use `mail4agent` as a reusable local mailbox server and CLI repo for future agent communication tests.
+- Use `mail4agent` as a reusable local mailbox server and CLI fixture for A2A collaboration tests.
 
 ## Scope
 
 - Keep the repo itself lightweight and dependency-free.
 - Preserve the existing HTTP server, admin UI, SQLite storage, and CLI flows as the baseline.
+- Prefer changes that directly unlock new A2A experiments, reduce experiment cost, or improve observability.
+- Avoid treating this repo as an open-ended product line when the same work does not help the experiments.
 - Add future test-specific notes here before making broader integration changes.
 
 ## Current State
 
 - The repo is cloned locally at `E:\agent_misc\mail4agent`.
 - The canonical dogfood branch now carries the first Wave 1 Python feature merge instead of only the initial scaffold.
+- This repo is currently both the A2A test tool and part of the A2A test environment, so feature work should stay subordinate to experiment goals.
 - The project exposes a local HTTP mailbox server plus CLI and adapter helpers, now including admin direct mailbox access, retry-queue visibility, and mailbox-scoped thread summaries/unread state.
 - The canonical repo now also includes explicit session logout plus expiry introspection, so maintenance and restart drills can validate re-login behavior against real runtime semantics.
 - The canonical repo now also includes session-scoped `default_inbox_address` handling for thread-state surfaces, so logged-in planner/reviewer runs no longer need explicit `--to-address` recovery on `thread-summaries` and `mark-thread-read`.
@@ -57,6 +60,7 @@
 - Future benchmark glue could accidentally drift the repo away from its simple standard-library baseline.
 - If test harness assumptions are added ad hoc, agent communication results may become hard to compare across runs.
 - A premature full-language migration would blur product ownership and weaken comparability while Rust still depends on Python as a semantic oracle for many feature-port validations.
+- Over-investing in `mail4agent` itself could turn the fixture into the main project and dilute effort away from A2A task design and evaluation.
 - The new retry-queue and thread-summary surfaces currently compute from live SQLite rows without heavier indexing or pagination beyond simple limits; keep later scale work explicit.
 - The current oncall path still has no global mailbox lock across all routes; `mailbox_thread` serialization is intentionally local to one mailbox, so the same thread can still be processed independently by different route mailboxes when that is semantically desired.
 - Cross-mailbox handoff still duplicates only the chosen source message snapshot, not the sender mailbox's entire historical thread context; deeper review flows should keep summaries explicit.
@@ -67,6 +71,7 @@
 - Keep the repo as a separate workspace under `E:\agent_misc\mail4agent`.
 - Treat Python as the primary home for product semantics, auth policy, operator workflows, CLI UX, admin flows, and future UI work.
 - Treat Rust as a selective backend path for server slices, bridge-heavy integrations, export/import, delivery-audit, and other bounded backend capabilities with a clear Python oracle.
+- Treat `mail4agent` primarily as an A2A experiment fixture; only expand it when that directly enables a new collaboration test or materially improves measurement/debuggability.
 - Migrate by capability, not by repo-wide rewrite.
 - For dogfood, use this canonical repo as the baseline root rather than a benchmark seed or a per-run benchmark workspace.
 - Promote Wave 1 Python mailbox features directly into the canonical repo rather than keeping them in benchmark result workspaces.
@@ -82,6 +87,7 @@
 - Do we want benchmark tasks that modify the mailbox server itself, or only tasks that consume it as external infrastructure?
 - Which backend capabilities are now mature enough to move from `Python primary` to `Rust primary` under the promotion criteria?
 - Should direct mailbox access eventually accept admin-account Basic auth on normal mailbox routes, or remain static-admin-token-only?
+- Which next A2A workloads actually require changes here, and which should instead be solved in the benchmark/task layer without adding more mailbox features?
 
 ## Language Strategy
 
