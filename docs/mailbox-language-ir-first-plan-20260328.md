@@ -192,6 +192,7 @@ Notes:
 - That shell now also includes a first source-DSL lowering slice through a new shared parser/checker module (`mailbox_language_source.py`). The current supported grammar is intentionally narrow but already covers `protocol`, `mailbox`, `let`, `send`, `send text`, `spawn`, and `handoff`, and it lowers those source statements into the same typed runtime artifacts rather than widening the mailbox server.
 - That bounded source layer now also performs a first static payload-type pass before runtime execution: declared field types are preserved in lowered protocol schemas, and the interpreter can reject primitive/list-shape mismatches such as `String` vs `123` or `[OrderItem]` vs `"sku-1"` during `check` / `lower`.
 - That same source layer now also honors bounded `let` type annotations and aliases: literal/value bindings can be checked against `String`, `Bool`, `Int`, `Float`, or `[T]`, and thread-producing expressions can be checked against `thread<Protocol/version>` plus simple thread-handle aliases.
+- The value layer now also supports bounded nested object literals (`{ field: expr; ... }`) so structured payload fragments can be composed locally and lowered into the same typed runtime artifacts without introducing functions, control flow, or a general-purpose expression language.
 - The next step after this MVP is broader DSL coverage, richer source spans, and fuller declaration/type diagnostics, not changing the mailbox server transport or moving runtime truth out of the mailbox server.
 
 ## Phase 4: Full Checker and Source-Level UX
@@ -210,6 +211,7 @@ Status:
 
 - A first bounded payload-field checker is now implemented for the interpreter path. Primitive and list-shape mismatches are caught locally during source lowering, while mailbox accepts/state/auth/runtime truth remains server-owned.
 - A first bounded `let` checker is now also implemented: value bindings, thread-handle annotations, and thread aliases are resolved locally during lowering, while live mailbox routing and thread ids are still only assigned by the runtime.
+- A first bounded structured-value layer is now also implemented: nested object literals survive lowering and stdio `run`, which makes richer payload assembly possible without widening the DSL into a general-purpose language.
 
 ## Difficulty Assessment
 

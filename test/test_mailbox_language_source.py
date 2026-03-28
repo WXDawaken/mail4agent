@@ -67,6 +67,36 @@ send to review_alias using Approve {
         self.assertEqual(lowered["thread_bindings"]["review_alias"]["protocol"], "Orders/v2")
         self.assertEqual(lowered["thread_bindings"]["review_alias"]["state"], "Done")
 
+    def test_lower_source_program_supports_nested_object_values(self) -> None:
+        lowered = lower_source_program(
+            """
+mailbox support_mb : PlainText/v1;
+
+let attachment: Attachment = {
+  kind: "invoice";
+  file_name: "invoice.pdf";
+  metadata: {
+    source: "email";
+    urgent: true;
+  };
+};
+
+let text_t = send text to support_mb {
+  body: "Please review the attachment";
+  attachments: [attachment];
+};
+""",
+            mailbox_addresses={"support_mb": "planner@mail4agent.codex"},
+            from_address="operator@mail4agent.codex",
+        )
+
+        payload = lowered["operations"][0]["artifact"]["payload"]
+        self.assertEqual(payload["body"], "Please review the attachment")
+        self.assertEqual(payload["attachments"][0]["kind"], "invoice")
+        self.assertEqual(payload["attachments"][0]["file_name"], "invoice.pdf")
+        self.assertEqual(payload["attachments"][0]["metadata"]["source"], "email")
+        self.assertEqual(payload["attachments"][0]["metadata"]["urgent"], True)
+
     def test_lower_source_program_tracks_thread_state_for_mailbox_and_thread_send(self) -> None:
         lowered = lower_source_program(
             orders_protocol_source()

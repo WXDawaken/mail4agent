@@ -274,6 +274,56 @@ send to review_alias using Approve {
         self.assertEqual(run_result["operations"][1]["result"]["state"], "Done")
         self.assertEqual(run_result["thread_bindings"]["review_t"]["thread_id"], run_result["thread_bindings"]["review_alias"]["thread_id"])
 
+    def test_dsl_program_run_supports_nested_object_values(self) -> None:
+        env = self.admin_env()
+        source = """
+mailbox support_mb : PlainText/v1;
+
+let attachment: Attachment = {
+  kind: "invoice";
+  file_name: "invoice.pdf";
+  metadata: {
+    source: "email";
+    urgent: true;
+  };
+};
+
+let text_t = send text to support_mb {
+  body: "Please review the attachment";
+  attachments: [attachment];
+};
+"""
+
+        response = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-run-object",
+                    "command": "run",
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {"support_mb": PLANNER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                }
+            ],
+        )[0]
+
+        self.assertTrue(response["ok"])
+        text_binding = response["run"]["thread_bindings"]["text_t"]
+        text_thread = request_json(
+            self.base_url,
+            "GET",
+            "/admin/thread",
+            token=self.admin_token,
+            query={"thread_id": text_binding["thread_id"]},
+        )["thread"]
+        payload = text_thread["messages"][0]["payload"]
+        self.assertEqual(payload["attachments"][0]["kind"], "invoice")
+        self.assertEqual(payload["attachments"][0]["metadata"]["source"], "email")
+        self.assertEqual(payload["attachments"][0]["metadata"]["urgent"], True)
+
     def test_protocol_check_and_lower_use_compile_cache(self) -> None:
         cache_dir = self.runtime_dir / "protocol-cache"
         env = self.base_env()

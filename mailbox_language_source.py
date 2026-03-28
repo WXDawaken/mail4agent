@@ -137,6 +137,11 @@ class ValueExpr:
     value: Any
 
 
+@dataclass(frozen=True)
+class VarRef:
+    name: str
+
+
 StatementExpr = SendStatement | SendTextStatement | SpawnStatement | ValueExpr
 Statement = LetStatement | SendStatement | SendTextStatement | SpawnStatement | HandoffStatement
 
@@ -345,7 +350,7 @@ class _Parser:
             return SpawnStatement(mailbox_name, message_ref, payload, from_thread)
 
         token = self._peek()
-        if token.kind in {"STRING", "NUMBER", "IDENT"} or token.text == "[":
+        if token.kind in {"STRING", "NUMBER", "IDENT"} or token.text in {"[", "{"}:
             return ValueExpr(self._parse_value())
 
         token = self._peek()
@@ -399,6 +404,15 @@ class _Parser:
         token = self._peek()
         if token.kind in {"STRING", "NUMBER"}:
             return self._parse_literal_value()
+        if token.text == "{":
+            self._advance()
+            payload: dict[str, Any] = {}
+            while not self._match("}"):
+                field_name = self._expect_identifier("object field")
+                self._expect(":")
+                payload[field_name] = self._parse_value()
+                self._expect(";")
+            return payload
         if token.text == "[":
             self._advance()
             items: list[Any] = []
@@ -417,7 +431,7 @@ class _Parser:
                 return False
             if token.text == "null":
                 return None
-            return {"kind": "var_ref", "name": token.text}
+            return VarRef(token.text)
         raise MailboxRuntimeError(
             "E_SOURCE_PARSE_INVALID",
             f"unexpected value token at {token.line}:{token.column}: {token.text!r}",
@@ -746,13 +760,8 @@ def _lower_statements(
                     "value expressions must be bound with let in the first DSL slice",
                 )
             alias_source_name: str | None = None
-            if (
-                isinstance(expr.value, dict)
-                and expr.value.get("kind") == "var_ref"
-                and isinstance(expr.value.get("name"), str)
-                and str(expr.value["name"]) in thread_env
-            ):
-                alias_source_name = str(expr.value["name"])
+            if isinstance(expr.value, VarRef) and expr.value.name in thread_env:
+                alias_source_name = expr.value.name
             binding_value = _resolve_binding_value(
                 expr.value,
                 value_env=value_env,
@@ -1109,15 +1118,15 @@ def _resolve_value(
     thread_env: dict[str, _StaticThreadBinding],
     inputs: dict[str, Any],
 ) -> Any:
+    if isinstance(value, VarRef):
+        return _resolve_named_binding(
+            value.name,
+            value_env=value_env,
+            thread_env=thread_env,
+            inputs=inputs,
+            for_payload=True,
+        )
     if isinstance(value, dict):
-        if value.get("kind") == "var_ref":
-            return _resolve_named_binding(
-                str(value.get("name") or ""),
-                value_env=value_env,
-                thread_env=thread_env,
-                inputs=inputs,
-                for_payload=True,
-            )
         return {
             key: _resolve_value(
                 item,
@@ -1147,9 +1156,9 @@ def _resolve_binding_value(
     thread_env: dict[str, _StaticThreadBinding],
     inputs: dict[str, Any],
 ) -> Any:
-    if isinstance(value, dict) and value.get("kind") == "var_ref":
+    if isinstance(value, VarRef):
         return _resolve_named_binding(
-            str(value.get("name") or ""),
+            value.name,
             value_env=value_env,
             thread_env=thread_env,
             inputs=inputs,
