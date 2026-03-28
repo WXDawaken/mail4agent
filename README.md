@@ -9,8 +9,8 @@ A tiny SQLite-backed mailbox service for local agent/harness messaging, plus a s
 - Protects admin routes with either an env admin token or admin username/password
 - Lets the configured admin token call the normal mailbox routes directly for operator workflows
 - Issues harness tokens and in-memory agent session tokens
-- Includes a browser admin page and a `client.py` CLI for login/send/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume
-- Includes repo-local dogfood helpers for medium planner/reviewer runs, a high-effort operator run, and a minimal operator oncall supervisor
+- Includes a browser admin page and a `client.py` CLI for login/send/handoff/claim/retry-queue/thread/inbox/thread-summaries/mark-thread-read/reply/consume
+- Includes repo-local dogfood helpers for medium planner/reviewer runs, a high-effort operator run, and a minimal operator oncall supervisor/server path
 - Stays dependency-free: Python standard library only
 
 ## Main Files
@@ -203,6 +203,12 @@ Filter that inbox view by message type when needed:
 python .\client.py inbox --limit 10 --message-type codex.task
 ```
 
+Filter that inbox view by sender when needed:
+
+```powershell
+python .\client.py inbox --limit 10 --from-address operator@mail4agent.dogfood
+```
+
 Filter that inbox view to messages created at or after a specific ISO timestamp:
 
 ```powershell
@@ -263,6 +269,14 @@ Bash equivalent:
 python3 ./client.py retry-queue --project-id mail4agent --limit 10
 ```
 
+Forward one visible message to another mailbox as a mailbox-native handoff while keeping the same `thread_id`:
+
+```powershell
+python .\client.py handoff --message-id <MESSAGE_ID> --to-address integrator@consumer_app.dogfood --message-type integration_handoff --summary "Please review the supplier reply."
+```
+
+The handoff message carries a `kind = mailbox_handoff` payload with source message refs and a source payload snapshot. This is useful when the target mailbox should continue the same coordination thread but cannot directly read the original mailbox's full thread history.
+
 Run an operator mailbox command directly with the admin token:
 
 ```powershell
@@ -292,6 +306,70 @@ python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood
 
 Use `--watch` if you want the supervisor to keep polling for more work instead of exiting after one attempt.
 Oncall and `consume` now default to mailbox-thread serialization: multiple supervisors will not claim the same delivery, and they also will not simultaneously process different active deliveries from the same thread within one mailbox route. Different threads can still run concurrently. Use distinct `--consumer-id` values for observability if you intentionally run more than one supervisor on the same mailbox, and set `--serialization-scope delivery` only if you explicitly want the older delivery-only behavior.
+
+Inspect the persisted oncall role registry plus current thread bindings for one runtime:
+
+```powershell
+python .\mailbox_oncall.py --role operator --runtime-dir .tmp_dogfood --inspect-registry
+```
+
+Run the watch-first oncall server entrypoint and let it stop after 10 idle minutes:
+
+```powershell
+python .\mailbox_oncall_server.py --role operator --runtime-dir .tmp_dogfood --idle-exit-after-seconds 600
+```
+
+PowerShell launcher equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Role operator -RuntimeDir .tmp_dogfood -IdleExitAfterSeconds 600
+```
+
+Experimental app-server backend:
+
+```powershell
+python .\mailbox_oncall_server.py --role operator --runtime-dir .tmp_dogfood --backend app-server --idle-exit-after-seconds 600
+```
+
+PowerShell launcher equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Role operator -RuntimeDir .tmp_dogfood -Backend app-server -IdleExitAfterSeconds 600
+```
+
+If you want the child Codex run isolated from the main checkout, point the oncall path at a temporary workspace plus a temporary `CODEX_HOME`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Role operator -RuntimeDir C:\temp\mail4agent_runtime -IdleExitAfterSeconds 60 -WorkspaceDir C:\temp\mail4agent_workspace -CodexHomeDir C:\temp\mail4agent_codex_home
+```
+
+The direct Python entrypoints expose the same controls as `--codex-workspace-dir` and `--codex-home-dir`. When those are set, the child prompt follows the current workspace instead of assuming the canonical repo root, so temporary smoke work and cleanup stay isolated.
+
+`--backend app-server` is now available as an experimental alternative. It starts `codex app-server --listen stdio://`, records the returned thread and turn ids in the oncall summary metadata, and keeps mailbox plus registry state as the durable source of truth. Within one long-lived oncall process, the app-server adapter now reports `supports_worker_reuse = true`, probes whether an existing thread binding is still live, and reuses the same app-server thread for follow-up deliveries on the same mailbox thread when that probe succeeds.
+
+That reuse is still process-local and recoverable rather than durable app-server state: if the watcher restarts, the supervisor will fall back to a fresh worker when the previous `worker_id` is no longer live, record `recovery_reason = previous_worker_not_available`, and continue with mailbox plus registry files as the source of truth.
+
+When a fresh worker is created for an existing mailbox thread, the app-server backend now also injects bounded recovery context from the thread registry into the new prompt: previous `worker_id`, previous `last_processed_message_id`, `recovery_reason`, and the bounded `handoff_summary` from the last completed run. That keeps cold recovery mailbox-driven and inspectable rather than depending on app-server-only hidden state.
+
+The app-server backend can now also resolve a per-delivery `workspace_dir` within the configured oncall workspace root. In practice this means one long-lived watcher can keep separate live workers for the same mailbox thread across different child workspaces, while still using the repo-root mailbox CLI and prompt assets from the main oncall checkout.
+
+Thread registry files now keep those workspace-local bindings under `bindings_by_workspace`, keyed by normalized absolute workspace path. Follow-up deliveries on the same mailbox thread will reuse the existing app-server worker only when both the mailbox thread and resolved workspace match a live binding; switching to a different child workspace starts a different worker without overwriting the older binding.
+
+Reusable backends now also accept worker-lifecycle controls:
+
+```powershell
+python .\mailbox_oncall_server.py --role operator --runtime-dir .tmp_dogfood --backend app-server --worker-idle-timeout-seconds 600 --worker-max-age-seconds 3600
+```
+
+PowerShell launcher equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Role operator -RuntimeDir .tmp_dogfood -Backend app-server -WorkerIdleTimeoutSeconds 600 -WorkerMaxAgeSeconds 3600
+```
+
+`--worker-idle-timeout-seconds` closes an unused sticky worker after that many idle seconds, while `--worker-max-age-seconds` retires a worker after that total lifetime even if it is still being reused. Both default to `900` and `3600` respectively for reusable backends, and passing `0` disables that limit.
+
+The current `codex-cli` backend still launches one fresh worker per claimed delivery, while thread registry files now capture `worker_id`, reuse support, recovery decisions, bounded handoff summaries, and app-server turn metadata so reusable backends stay inspectable.
 
 Bash equivalent:
 
@@ -353,6 +431,12 @@ powershell -ExecutionPolicy Bypass -File .\launch_dogfood_agent.ps1 operator
 ```
 
 That operator path logs in with the harness token, targets the `operator@mail4agent.dogfood` group mailbox, and uses `gpt-5.4` with `model_reasoning_effort = high`. See [docs/dogfood-operator-update-flow-20260324.md](E:\agent_misc\mail4agent\docs\dogfood-operator-update-flow-20260324.md).
+
+For a watch-first operator mailbox worker with optional idle exit:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch_dogfood_oncall_server.ps1 -Role operator -RuntimeDir .tmp_dogfood -IdleExitAfterSeconds 600
+```
 
 ## Notes
 

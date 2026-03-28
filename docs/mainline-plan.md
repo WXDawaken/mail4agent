@@ -22,6 +22,15 @@
 - The canonical repo now also has a first oncall direction: keep `client.py consume` as the generic worker primitive, but move role-aware mailbox supervision into a separate script instead of growing the main CLI indefinitely.
 - That first oncall direction is now implemented for `operator`: `mailbox_oncall.py` supervises one claimed delivery at a time, while `launch_dogfood_oncall_agent.ps1` stages runtime assets into a repo-local sandbox-visible directory before launching Codex.
 - The current oncall model is still intentionally stateless across supervisor processes, but the server now defaults claims to `mailbox_thread` serialization so one mailbox thread is processed serially even if more than one supervisor watches the same mailbox route.
+- A first cross-project dogfood design now also exists in `docs\dogfood-cross-project-supply-demand-scenario-20260326.md`; it treats mailbox as a service channel between a consumer project and a shared-tools supplier project instead of only as same-project coordination.
+- The dogfood launchers are now config-driven instead of hardcoding `project_id = mail4agent`; both one-shot and oncall launchers derive login identity from the role runtime config so the same machinery can be reused for cross-project drills.
+- The first live cross-project drill is now complete in `docs\dogfood-cross-project-routing-explain-report-20260326.md`; `consumer_app` planner sent one bounded request to `shared_tools` intake, supplier-side oncall replied on the same thread, and the consumer sent acceptance with retry queue left empty.
+- The second live cross-project drill is now also complete in `docs\dogfood-cross-project-bounded-patch-request-report-20260326.md`; this time supplier-side oncall made a real bounded repo change (`inbox` sender filtering), local follow-up validation passed, and the consumer sent acceptance on the same mailbox thread.
+- The canonical repo now also includes a mailbox-native `client.py handoff` command; it wraps one visible source message into a new handoff message that preserves `thread_id` while carrying source refs and a source payload snapshot for a different target mailbox.
+- The third live cross-project drill is now also complete in `docs\dogfood-cross-project-handoff-report-20260326.md`; it proved planner can hand off a supplier reply to integrator without widening server visibility, and integrator can send acceptance on the same thread from its own mailbox.
+- A mailbox/oncall architecture note now also exists in `docs\mailbox-oncall-separation-20260328.md`; it defines `mailbox server` as the communication and fact layer, `oncall server` as the supervision layer, and app-server-managed agents as replaceable execution backends rather than durable workflow state.
+- A follow-on implementation note now also exists in `docs\mailbox-oncall-implementation-plan-20260328.md`; it maps the current codebase into mailbox-side runtime, oncall supervision, and execution-backend seams, and recommends refactoring toward `oncall_supervisor.py` plus `oncall_registry.py` before adding sticky per-thread agents.
+- A mailbox-language implementation note now also exists in `docs\mailbox-language-ir-first-plan-20260328.md`; it evaluates `mailbox_language_spec_v0_2.md` against the current repo, recommends an IR-first rollout inside the mailbox server, and keeps the textual DSL as a separate stdio-capable interpreter layer.
 
 ## Milestones
 
@@ -32,6 +41,7 @@
 - Use Rust selectively for bounded backend slices once Python behavior is stabilized.
 - Keep a lightweight repo-local dogfood smoke path so real mailbox usage can be exercised outside the benchmark harness.
 - Keep a lightweight repo-local oncall path so claimed mailbox work can be supervised without a permanently blocked interactive Codex session.
+- Keep cross-project consumer-side review bounded by explicit mailbox handoff instead of widening server-side thread visibility between unrelated mailboxes.
 
 ## Risks
 
@@ -40,6 +50,8 @@
 - A premature full-language migration would blur product ownership and weaken comparability while Rust still depends on Python as a semantic oracle for many feature-port validations.
 - The new retry-queue and thread-summary surfaces currently compute from live SQLite rows without heavier indexing or pagination beyond simple limits; keep later scale work explicit.
 - The current oncall path still has no global mailbox lock across all routes; `mailbox_thread` serialization is intentionally local to one mailbox, so the same thread can still be processed independently by different route mailboxes when that is semantically desired.
+- Cross-mailbox handoff still duplicates only the chosen source message snapshot, not the sender mailbox's entire historical thread context; deeper review flows should keep summaries explicit.
+- If we later introduce sticky per-thread agents, mailbox-visible facts and bounded handoff summaries should stay recoverable without depending on one surviving long-lived agent session.
 
 ## Decisions
 
@@ -51,6 +63,8 @@
 - Promote Wave 1 Python mailbox features directly into the canonical repo rather than keeping them in benchmark result workspaces.
 - Keep admin page UI work out of scope for the first Wave 1 merge; only runtime/server/CLI/docs/validation moved.
 - Keep the first dogfood smoke bounded to medium-effort planner/reviewer runs, but allow a separate high-effort operator lane for bounded repo-local update tasks driven by `dogfood_smoke_bootstrap.py` plus `launch_dogfood_agent.ps1`.
+- Keep `mailbox` and `oncall` logically separable even while they live in the same repo; prefer explicit module and process boundaries over embedding all supervision logic into the mailbox server itself.
+- Keep the mailbox server DSL-agnostic; implement `mailbox_language_spec` via typed IR/runtime changes first, and add the textual language as a separate interpreter with native stdio support.
 
 ## Open Questions
 
@@ -67,6 +81,14 @@
 - Dogfood smoke runbook: `E:\agent_misc\mail4agent\docs\dogfood-medium-smoke-20260324.md`
 - Dogfood operator update flow: `E:\agent_misc\mail4agent\docs\dogfood-operator-update-flow-20260324.md`
 - Dogfood operator oncall flow: `E:\agent_misc\mail4agent\docs\dogfood-operator-oncall-20260325.md`
+- Cross-project supply-demand scenario: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-supply-demand-scenario-20260326.md`
+- Cross-project routing-explain drill: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-routing-explain-drill-20260326.md`
+- Cross-project routing-explain report: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-routing-explain-report-20260326.md`
+- Cross-project bounded patch report: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-bounded-patch-request-report-20260326.md`
+- Cross-project handoff report: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-handoff-report-20260326.md`
+- Mailbox/oncall separation note: `E:\agent_misc\mail4agent\docs\mailbox-oncall-separation-20260328.md`
+- Mailbox/oncall implementation plan: `E:\agent_misc\mail4agent\docs\mailbox-oncall-implementation-plan-20260328.md`
+- Mailbox language IR-first plan: `E:\agent_misc\mail4agent\docs\mailbox-language-ir-first-plan-20260328.md`
 - Dogfood maintenance scenario: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-scenario-20260324.md`
 - Dogfood maintenance drill playbook: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-drill-20260324.md`
 - First maintenance continuity report: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-report-20260324.md`

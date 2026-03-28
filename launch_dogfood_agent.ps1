@@ -82,10 +82,11 @@ if (-not (Test-Path $promptPath)) {
 }
 
 $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+$configJson = Get-Content $configPath -Raw | ConvertFrom-Json
 $env:MAILBOX_TOKEN = (Get-Content $tokenPath -Raw).Trim()
 $env:MAILBOX_TIMEOUT_SECONDS = "15"
 $env:MAILBOX_HARNESS_ID = [string]$summary.harness_id
-$env:MAILBOX_PROJECT_ID = [string]$summary.project_id
+$env:MAILBOX_PROJECT_ID = if ($configJson.project_id) { [string]$configJson.project_id } else { [string]$summary.project_id }
 $env:MAILBOX_AGENT_ROLE = $Role
 $env:CODEX_HOME = $codexHome
 
@@ -103,7 +104,32 @@ foreach ($name in @("auth.json", "config.toml", "cap_sid", "version.json")) {
 Push-Location $root
 try {
     $loginArgs = @(".\client.py", "login", "--output", "token")
-    $loginArgs += [string[]]$selected.LoginArgs
+    $loginProjectId = [string]$configJson.project_id
+    if ([string]::IsNullOrWhiteSpace($loginProjectId)) {
+        throw "Runtime config is missing project_id."
+    }
+    $loginArgs += @("--project-id", $loginProjectId)
+    if ($configJson.roles) {
+        $joinedRoles = [string]::Join(",", @($configJson.roles))
+        if (-not [string]::IsNullOrWhiteSpace($joinedRoles)) {
+            $loginArgs += @("--roles", $joinedRoles)
+        }
+    }
+    elseif ($configJson.role) {
+        $loginArgs += @("--role", [string]$configJson.role)
+    }
+    if ($configJson.session) {
+        $loginArgs += @("--session", [string]$configJson.session)
+    }
+    if ($configJson.agent_name) {
+        $loginArgs += @("--agent-name", [string]$configJson.agent_name)
+    }
+    if ($configJson.local_part) {
+        $loginArgs += @("--local-part", [string]$configJson.local_part)
+    }
+    if ($configJson.mailbox_type) {
+        $loginArgs += @("--mailbox-type", [string]$configJson.mailbox_type)
+    }
     $env:MAILBOX_SESSION_TOKEN = (python @loginArgs).Trim()
     Remove-Item Env:MAILBOX_TOKEN -ErrorAction SilentlyContinue
 

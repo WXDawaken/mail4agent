@@ -2659,6 +2659,7 @@ class SQLiteMailbox:
         *,
         to_address: str,
         limit: int = 20,
+        from_address: str | None = None,
         message_type: str | None = None,
         thread_id: str | None = None,
         since: str | None = None,
@@ -2670,6 +2671,12 @@ class SQLiteMailbox:
         if limit == 0:
             return []
         unread_only = bool(unread_only)
+
+        from_mailbox_id = None
+        if from_address is not None:
+            normalized_from_address = str(from_address).strip()
+            if normalized_from_address:
+                from_mailbox_id = self.resolve_address(normalized_from_address).mailbox_id
 
         normalized_message_type = None
         if message_type is not None:
@@ -2698,6 +2705,10 @@ class SQLiteMailbox:
 
         with self.connect() as conn:
             params: list[Any] = [mailbox.mailbox_id, mailbox.mailbox_id, mailbox.mailbox_id]
+            from_filter = ""
+            if from_mailbox_id is not None:
+                from_filter = "AND m.from_mailbox_id = ?"
+                params.append(from_mailbox_id)
             message_type_filter = ""
             if normalized_message_type is not None:
                 message_type_filter = "AND m.message_type = ?"
@@ -2739,6 +2750,7 @@ class SQLiteMailbox:
                               AND d.to_mailbox_id = ?
                         )
                       )
+                  {from_filter}
                   {message_type_filter}
                   {thread_filter}
                   {since_filter}

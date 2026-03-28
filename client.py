@@ -159,6 +159,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inbox_parser.add_argument("--to-address")
     inbox_parser.add_argument("--limit", type=int, default=20)
+    inbox_parser.add_argument("--from-address")
     inbox_parser.add_argument("--message-type")
     inbox_parser.add_argument("--thread-id")
     inbox_parser.add_argument("--since")
@@ -196,6 +197,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
     )
+
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        parents=[common],
+        help="forward one visible message to another mailbox as a mailbox-native handoff",
+    )
+    handoff_parser.add_argument("--message-id", required=True, help="visible source message id")
+    handoff_parser.add_argument("--to-address", required=True)
+    handoff_parser.add_argument("--from-address")
+    handoff_parser.add_argument("--subject")
+    handoff_parser.add_argument("--message-type", default="handoff")
+    handoff_parser.add_argument("--summary")
+    handoff_parser.add_argument("--summary-file")
+    handoff_parser.add_argument("--instructions")
+    handoff_parser.add_argument("--instructions-file")
+    handoff_parser.add_argument("--correlation-id")
+    handoff_parser.add_argument("--workflow-id")
+    handoff_parser.add_argument("--idempotency-key")
+    handoff_parser.add_argument("--headers-json", help="headers JSON object")
 
     reply_parser = subparsers.add_parser("reply", parents=[common], help="send a reply for one delivery")
     reply_parser.add_argument("--delivery-json", help="delivery JSON object or claim result JSON")
@@ -369,6 +389,7 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
         return client.get_inbox(
             to_address=args.to_address,
             limit=args.limit,
+            from_address=args.from_address,
             message_type=args.message_type,
             thread_id=args.thread_id,
             since=args.since,
@@ -406,6 +427,21 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             deliver_after_seconds=args.deliver_after_seconds,
             expires_in_seconds=args.expires_in_seconds,
             max_attempts=args.max_attempts,
+        )
+    if args.command == "handoff":
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        return client.handoff_message(
+            source_message_id=args.message_id,
+            to_address=args.to_address,
+            summary=_load_optional_text(args.summary, args.summary_file, label="summary"),
+            instructions=_load_optional_text(args.instructions, args.instructions_file, label="instructions"),
+            from_address=args.from_address,
+            subject=args.subject,
+            message_type=args.message_type,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
         )
     if args.command == "reply":
         auth_source = getattr(args, "_auth_source", None)
@@ -738,6 +774,14 @@ def _load_optional_json_any(
     return _load_json_any_from_text(raw_text, label=label)
 
 
+def _load_optional_text(raw_text: str | None, file_path: str | None, *, label: str) -> str | None:
+    if raw_text is not None and file_path is not None:
+        raise ValueError(f"provide either --{label} or --{label}-file, not both")
+    if file_path is not None:
+        return _read_text(Path(file_path))
+    return raw_text
+
+
 def _load_json_any_from_text(raw_text: str, *, label: str) -> Any:
     try:
         payload = json.loads(raw_text)
@@ -926,6 +970,8 @@ def _format_text_payload(payload: dict[str, Any], args: argparse.Namespace) -> s
         return _format_retry_queue_text(payload)
     if command == "send":
         return _format_send_text(payload)
+    if command == "handoff":
+        return _format_handoff_text(payload)
     if command == "reply":
         return _format_reply_text(payload)
     if command == "claim":
@@ -1140,6 +1186,22 @@ def _format_reply_text(payload: dict[str, Any]) -> str:
         lines.append("")
         lines.append("reply:")
         lines.extend(_indent_lines(_format_send_text(reply).splitlines(), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_handoff_text(payload: dict[str, Any]) -> str:
+    lines = _format_send_text(payload).splitlines()
+    _append_field(lines, "target_address", payload.get("target_address"))
+    source_message = payload.get("source_message")
+    if isinstance(source_message, dict):
+        if lines:
+            lines.append("")
+        lines.append("source_message:")
+        _append_field(lines, "  message_id", source_message.get("message_id"))
+        _append_field(lines, "  thread_id", source_message.get("thread_id"))
+        _append_field(lines, "  from", source_message.get("from"))
+        _append_field(lines, "  message_type", source_message.get("message_type"))
+        _append_field(lines, "  subject", source_message.get("subject"))
     return "\n".join(lines)
 
 

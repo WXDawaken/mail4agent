@@ -25,15 +25,20 @@ class ConsumeConfig:
     ack_exit_codes: frozenset[int]
     once: bool = False
     max_deliveries: int | None = None
+    max_empty_polls: int | None = None
 
 
 ConsumeHandler = Callable[[dict[str, Any]], int]
+DeliveryCompletionCallback = Callable[[dict[str, Any], int, str], None]
+IdlePollCallback = Callable[[], None]
 
 
 def run_consume_loop(
     client: MailboxHTTPClient,
     config: ConsumeConfig,
     handler: ConsumeHandler,
+    on_delivery_complete: DeliveryCompletionCallback | None = None,
+    on_idle: IdlePollCallback | None = None,
 ) -> dict[str, Any]:
     processed = 0
     acked = 0
@@ -51,7 +56,11 @@ def run_consume_loop(
         )
         if delivery is None:
             empty_polls += 1
+            if on_idle is not None:
+                on_idle()
             if config.once:
+                break
+            if config.max_empty_polls is not None and empty_polls >= config.max_empty_polls:
                 break
             if config.max_deliveries is not None and processed >= config.max_deliveries:
                 break
@@ -76,6 +85,7 @@ def run_consume_loop(
             if not ok:
                 raise RuntimeError(f"ack rejected for delivery {delivery['delivery_id']}")
             acked += 1
+            completion_status = "acked"
         else:
             ok = client.nack(
                 delivery_id=int(delivery["delivery_id"]),
@@ -87,6 +97,10 @@ def run_consume_loop(
             if not ok:
                 raise RuntimeError(f"nack rejected for delivery {delivery['delivery_id']}")
             nacked += 1
+            completion_status = "retry_pending"
+
+        if on_delivery_complete is not None:
+            on_delivery_complete(delivery, return_code, completion_status)
 
         if config.once:
             break

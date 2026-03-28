@@ -843,6 +843,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             requested_address = (query.get("to_address") or [None])[0]
             limit_text = (query.get("limit") or ["20"])[0]
             limit = int(limit_text)
+            from_address = (query.get("from_address") or [None])[0]
             message_type = (query.get("message_type") or [None])[0]
             thread_id = (query.get("thread_id") or [None])[0]
             since = (query.get("since") or [None])[0]
@@ -858,6 +859,7 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
             messages = self.mailbox.get_inbox_messages_for_mailbox(
                 to_address=mailbox.address,
                 limit=limit,
+                from_address=from_address,
                 message_type=message_type,
                 thread_id=thread_id,
                 since=since,

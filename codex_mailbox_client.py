@@ -300,6 +300,7 @@ class MailboxHTTPClient:
         *,
         to_address: str | None = None,
         limit: int = 20,
+        from_address: str | None = None,
         message_type: str | None = None,
         thread_id: str | None = None,
         since: str | None = None,
@@ -315,6 +316,8 @@ class MailboxHTTPClient:
         query = {"limit": str(limit)}
         if effective_to_address:
             query["to_address"] = effective_to_address
+        if from_address is not None:
+            query["from_address"] = from_address
         if message_type is not None:
             query["message_type"] = message_type
         if thread_id is not None:
@@ -452,6 +455,70 @@ class MailboxHTTPClient:
             headers=headers,
             idempotency_key=idempotency_key,
         )
+
+    def handoff_message(
+        self,
+        *,
+        source_message_id: str,
+        to_address: str,
+        summary: str | None = None,
+        instructions: str | None = None,
+        from_address: str | None = None,
+        subject: str | None = None,
+        message_type: str = "handoff",
+        correlation_id: str | None = None,
+        workflow_id: str | None = None,
+        idempotency_key: str | None = None,
+        headers: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source_message = self.get_message(source_message_id)
+        if source_message is None:
+            raise ValueError(f"source message not found or not visible: {source_message_id}")
+
+        source_subject = source_message.get("subject")
+        source_correlation_id = source_message.get("correlation_id")
+        source_workflow_id = source_message.get("workflow_id")
+        handoff_payload: dict[str, Any] = {
+            "kind": "mailbox_handoff",
+            "source": {
+                "message_id": source_message.get("message_id"),
+                "thread_id": source_message.get("thread_id"),
+                "in_reply_to_message_id": source_message.get("in_reply_to_message_id"),
+                "correlation_id": source_correlation_id,
+                "workflow_id": source_workflow_id,
+                "subject": source_subject,
+                "message_type": source_message.get("message_type"),
+                "from": source_message.get("from"),
+                "to": source_message.get("to"),
+                "payload": source_message.get("payload"),
+                "headers": source_message.get("headers"),
+                "created_at": source_message.get("created_at"),
+            },
+        }
+        if summary is not None:
+            handoff_payload["summary"] = summary
+        if instructions is not None:
+            handoff_payload["instructions"] = instructions
+
+        send_result = self.send(
+            to_address=to_address,
+            payload=handoff_payload,
+            from_address=from_address,
+            subject=subject if subject is not None else _handoff_subject(source_subject),
+            message_type=message_type,
+            thread_id=_optional_message_str(source_message, "thread_id"),
+            in_reply_to_message_id=_optional_message_str(source_message, "message_id"),
+            correlation_id=correlation_id or _optional_message_str(source_message, "correlation_id"),
+            workflow_id=workflow_id or _optional_message_str(source_message, "workflow_id"),
+            idempotency_key=idempotency_key,
+            headers=headers,
+        )
+        return {
+            "ok": True,
+            **send_result,
+            "target_address": to_address,
+            "source_message": source_message,
+        }
 
     def claim(
         self,
@@ -820,3 +887,19 @@ def _reply_subject(subject: Any) -> str | None:
     if stripped.lower().startswith("re:"):
         return stripped
     return f"re: {stripped}"
+
+
+def _handoff_subject(subject: Any) -> str:
+    if not isinstance(subject, str) or not subject.strip():
+        return "handoff: mailbox message"
+    stripped = subject.strip()
+    if stripped.lower().startswith("handoff:"):
+        return stripped
+    return f"handoff: {stripped}"
+
+
+def _optional_message_str(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None

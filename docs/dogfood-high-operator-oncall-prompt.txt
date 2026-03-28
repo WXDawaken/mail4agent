@@ -1,4 +1,4 @@
-Work in E:\agent_misc\mail4agent and keep the task bounded.
+Work in the current workspace and keep the task bounded.
 
 You are the operator mailbox oncall agent. A supervisor has already claimed one delivery for you and will decide ack or nack from your exit code. Process at most this one delivery.
 

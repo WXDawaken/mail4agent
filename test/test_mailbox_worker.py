@@ -165,6 +165,109 @@ class MailboxWorkerTests(unittest.TestCase):
         self.assertEqual(len(client.claim_calls), 1)
         self.assertEqual(client.claim_calls[0]["serialization_scope"], "delivery")
 
+    def test_run_consume_loop_reports_delivery_completion_status(self) -> None:
+        client = FakeMailboxClient(
+            [
+                {
+                    "delivery_id": 404,
+                    "message_id": "msg-404",
+                    "thread_id": "thread-404",
+                    "claim_token": "claim-404",
+                    "from": "planner@example.test",
+                    "to": "operator@example.test",
+                }
+            ]
+        )
+        config = ConsumeConfig(
+            to_address="operator@example.test",
+            to_addresses=(),
+            consumer_id="worker-callback",
+            serialization_scope="mailbox_thread",
+            lease_seconds=120,
+            heartbeat_interval_seconds=10.0,
+            poll_interval_seconds=0.01,
+            retry_after_seconds=30,
+            ack_exit_codes=frozenset({0}),
+            once=True,
+            max_deliveries=None,
+        )
+        callbacks: list[dict[str, object]] = []
+
+        run_consume_loop(
+            client,
+            config,
+            lambda _delivery: 0,
+            on_delivery_complete=lambda delivery, return_code, status: callbacks.append(
+                {
+                    "delivery_id": int(delivery["delivery_id"]),
+                    "return_code": return_code,
+                    "status": status,
+                }
+            ),
+        )
+
+        self.assertEqual(
+            callbacks,
+            [
+                {
+                    "delivery_id": 404,
+                    "return_code": 0,
+                    "status": "acked",
+                }
+            ],
+        )
+
+    def test_run_consume_loop_stops_after_max_empty_polls(self) -> None:
+        client = FakeMailboxClient([])
+        config = ConsumeConfig(
+            to_address="operator@example.test",
+            to_addresses=(),
+            consumer_id="worker-idle-stop",
+            serialization_scope="mailbox_thread",
+            lease_seconds=120,
+            heartbeat_interval_seconds=10.0,
+            poll_interval_seconds=0.01,
+            retry_after_seconds=30,
+            ack_exit_codes=frozenset({0}),
+            once=False,
+            max_deliveries=None,
+            max_empty_polls=3,
+        )
+
+        summary = run_consume_loop(client, config, lambda _delivery: 0)
+
+        self.assertEqual(summary["processed"], 0)
+        self.assertEqual(summary["empty_polls"], 3)
+        self.assertEqual(len(client.claim_calls), 3)
+
+    def test_run_consume_loop_calls_idle_callback_on_empty_polls(self) -> None:
+        client = FakeMailboxClient([])
+        config = ConsumeConfig(
+            to_address="operator@example.test",
+            to_addresses=(),
+            consumer_id="worker-idle-callback",
+            serialization_scope="mailbox_thread",
+            lease_seconds=120,
+            heartbeat_interval_seconds=10.0,
+            poll_interval_seconds=0.01,
+            retry_after_seconds=30,
+            ack_exit_codes=frozenset({0}),
+            once=False,
+            max_deliveries=None,
+            max_empty_polls=2,
+        )
+        idle_ticks: list[str] = []
+
+        summary = run_consume_loop(
+            client,
+            config,
+            lambda _delivery: 0,
+            on_idle=lambda: idle_ticks.append("tick"),
+        )
+
+        self.assertEqual(summary["empty_polls"], 2)
+        self.assertEqual(idle_ticks, ["tick", "tick"])
+
     def test_build_handler_env_exports_delivery_fields(self) -> None:
         env = build_handler_env(
             {

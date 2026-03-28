@@ -22,6 +22,41 @@ def inbox_items(payload: dict[str, object]) -> list[dict[str, object]]:
 
 
 class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
+    def test_http_inbox_route_can_filter_by_from_address(self) -> None:
+        reviewer_session = login_role_session(
+            self.base_url,
+            self.tokens["codex"],
+            role="reviewer",
+            consumer_id="python-inbox-http-from-address",
+            session_name="dogfood-inbox-http-from-address",
+        )
+        session_token = auth_token_for_client(reviewer_session)
+
+        self.reviewer_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-from-address", "step": 1},
+            subject="inbox http from self",
+            message_type="codex.inbox.from-address",
+        )
+        self.pause_for_ordering()
+        operator_message = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-http-from-address", "step": 2},
+            subject="inbox http from operator",
+            message_type="codex.inbox.from-address",
+        )
+
+        filtered = request_json(
+            self.base_url,
+            "GET",
+            "/inbox",
+            token=session_token,
+            query={"limit": 10, "from_address": OPERATOR_ADDRESS},
+        )
+        filtered_items = inbox_items(filtered)
+        self.assertEqual(message_ids_from_items(filtered_items), [str(operator_message["message_id"])])
+        self.assertEqual(filtered_items[0].get("from"), OPERATOR_ADDRESS)
+
     def test_http_inbox_route_uses_session_default_inbox_and_message_type_filter(self) -> None:
         reviewer_session = login_role_session(
             self.base_url,
@@ -277,6 +312,20 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             message_type="codex.inbox.cli.keep",
         )
         self.pause_for_ordering()
+        cli_other_sender = self.reviewer_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-cli", "step": "other-sender"},
+            subject="inbox cli other sender",
+            message_type="codex.inbox.cli.from-address",
+        )
+        self.pause_for_ordering()
+        cli_operator_sender = self.operator_harness_client.send(
+            to_address=REVIEWER_ADDRESS,
+            payload={"task": "inbox-cli", "step": "operator-sender"},
+            subject="inbox cli operator sender",
+            message_type="codex.inbox.cli.from-address",
+        )
+        self.pause_for_ordering()
         ignored = self.operator_harness_client.send(
             to_address=REVIEWER_ADDRESS,
             payload={"task": "inbox-cli", "step": 2},
@@ -327,6 +376,8 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             "inbox",
             "--limit",
             "10",
+            "--from-address",
+            OPERATOR_ADDRESS,
             "--message-type",
             "codex.inbox.cli.keep",
             "--since",
@@ -336,6 +387,20 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
         self.assertEqual(message_ids_from_items(visible), [str(newer["message_id"])])
         self.assertNotIn(str(older["message_id"]), message_ids_from_items(visible))
         self.assertNotIn(str(ignored["message_id"]), message_ids_from_items(visible))
+
+        sender_filtered = run_client_json(
+            env,
+            "inbox",
+            "--limit",
+            "10",
+            "--from-address",
+            OPERATOR_ADDRESS,
+            "--message-type",
+            "codex.inbox.cli.from-address",
+        )
+        sender_filtered_items = inbox_items(sender_filtered)
+        self.assertEqual(message_ids_from_items(sender_filtered_items), [str(cli_operator_sender["message_id"])])
+        self.assertNotIn(str(cli_other_sender["message_id"]), message_ids_from_items(sender_filtered_items))
 
         thread_filtered = run_client_json(
             env,
