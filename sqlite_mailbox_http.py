@@ -43,6 +43,7 @@ from sqlite_mailbox import (
     canonicalize_address,
     normalize_claim_serialization_scope,
     normalize_address_component,
+    parse_protocol_ref,
     parse_utc_timestamp,
     split_address,
 )
@@ -618,6 +619,73 @@ class MailboxRequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "mailboxes": self.mailbox.list_mailboxes(harness_id=harness_id, project_id=project_id),
             }
+
+        if method == "POST" and path == "/admin/register_protocol":
+            protocol_name, protocol_version = parse_protocol_ref(_require(body, "protocol", str))
+            protocol = self.mailbox.register_protocol(
+                protocol_name=protocol_name,
+                protocol_version=protocol_version,
+                schema=_optional_dict(body, "schema"),
+            )
+            return 200, {"ok": True, "protocol": protocol}
+
+        if method == "GET" and path == "/admin/list_protocols":
+            return 200, {"ok": True, "protocols": self.mailbox.list_protocols()}
+
+        if method == "POST" and path == "/admin/set_mailbox_protocols":
+            accepts = _optional_str_list(body, "accepts")
+            if accepts is None:
+                raise ValueError("missing required field: accepts")
+            bindings = self.mailbox.set_mailbox_protocols(
+                address=_require(body, "address", str),
+                accepts=accepts,
+                default_protocol=_optional(body, "default_protocol", str),
+            )
+            return 200, {"ok": True, "bindings": bindings}
+
+        if method == "GET" and path == "/admin/get_mailbox_protocols":
+            address = (query.get("address") or [None])[0]
+            if not address:
+                raise ValueError("missing query parameter: address")
+            return 200, {"ok": True, "bindings": self.mailbox.get_mailbox_protocols(address=address)}
+
+        if method == "POST" and path == "/admin/set_thread_runtime":
+            thread_runtime_kwargs: dict[str, Any] = {}
+            if "protocol" in body:
+                protocol_ref = body["protocol"]
+                if protocol_ref is None:
+                    thread_runtime_kwargs["protocol_name"] = None
+                    thread_runtime_kwargs["protocol_version"] = None
+                elif isinstance(protocol_ref, str):
+                    protocol_name, protocol_version = parse_protocol_ref(protocol_ref)
+                    thread_runtime_kwargs["protocol_name"] = protocol_name
+                    thread_runtime_kwargs["protocol_version"] = protocol_version
+                else:
+                    raise ValueError("field protocol must be a string or null")
+            if "state" in body:
+                state_value = body["state"]
+                if state_value is not None and not isinstance(state_value, str):
+                    raise ValueError("field state must be a string or null")
+                thread_runtime_kwargs["state_name"] = state_value
+            if "parent_thread_id" in body:
+                parent_value = body["parent_thread_id"]
+                if parent_value is not None and not isinstance(parent_value, str):
+                    raise ValueError("field parent_thread_id must be a string or null")
+                thread_runtime_kwargs["parent_thread_id"] = parent_value
+            thread_payload = self.mailbox.set_thread_runtime(
+                thread_id=_require(body, "thread_id", str),
+                **thread_runtime_kwargs,
+            )
+            return 200, {"ok": True, "thread": thread_payload}
+
+        if method == "POST" and path == "/admin/record_thread_handoff":
+            handoff = self.mailbox.record_thread_handoff(
+                from_thread_id=_require(body, "from_thread_id", str),
+                to_thread_id=_require(body, "to_thread_id", str),
+                actor=_optional(body, "actor", str),
+                metadata=_optional_dict(body, "metadata"),
+            )
+            return 200, {"ok": True, "handoff": handoff}
 
         if method == "GET" and path == "/admin/list_harness_tokens":
             harness_id = (query.get("harness_id") or [None])[0]

@@ -31,6 +31,7 @@
 - A mailbox/oncall architecture note now also exists in `docs\mailbox-oncall-separation-20260328.md`; it defines `mailbox server` as the communication and fact layer, `oncall server` as the supervision layer, and app-server-managed agents as replaceable execution backends rather than durable workflow state.
 - A follow-on implementation note now also exists in `docs\mailbox-oncall-implementation-plan-20260328.md`; it maps the current codebase into mailbox-side runtime, oncall supervision, and execution-backend seams, and recommends refactoring toward `oncall_supervisor.py` plus `oncall_registry.py` before adding sticky per-thread agents.
 - A mailbox-language implementation note now also exists in `docs\mailbox-language-ir-first-plan-20260328.md`; it evaluates `mailbox_language_spec_v0_2.md` against the current repo, recommends an IR-first rollout inside the mailbox server, and keeps the textual DSL as a separate stdio-capable interpreter layer.
+- The first mailbox-language runtime foundation is now also implemented in the mailbox server: protocol registry rows, mailbox `accepts/default` bindings, per-thread protocol/state metadata, admin-recorded thread handoff relations, and thread inspection surfaces now exist without requiring the server to parse the textual DSL.
 
 ## Milestones
 

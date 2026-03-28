@@ -17,6 +17,7 @@ ADDRESS_RE = re.compile(
     r"^(?P<local>[A-Za-z0-9._-]+)@(?P<project>[A-Za-z0-9._-]+)\.(?P<harness>[A-Za-z0-9._-]+)$"
 )
 ADDRESS_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+PROTOCOL_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 CLAIM_SERIALIZATION_SCOPES = frozenset({"delivery", "mailbox_thread"})
 
 
@@ -76,6 +77,39 @@ def normalize_address_component(value: str, field_name: str) -> str:
     if not ADDRESS_COMPONENT_RE.match(normalized):
         raise ValueError(f"{field_name} must use only [A-Za-z0-9._-]")
     return normalized
+
+
+def normalize_protocol_component(value: str, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty")
+    if not PROTOCOL_COMPONENT_RE.match(normalized):
+        raise ValueError(f"{field_name} must use only [A-Za-z0-9._-]")
+    return normalized
+
+
+def parse_protocol_ref(protocol_ref: str) -> tuple[str, str]:
+    if not isinstance(protocol_ref, str):
+        raise ValueError("protocol must be a string")
+    normalized = protocol_ref.strip()
+    if not normalized:
+        raise ValueError("protocol must not be empty")
+    protocol_name, separator, protocol_version = normalized.partition("/")
+    if not separator:
+        raise ValueError("protocol must use the form Name/version")
+    return (
+        normalize_protocol_component(protocol_name, "protocol_name"),
+        normalize_protocol_component(protocol_version, "protocol_version"),
+    )
+
+
+def format_protocol_ref(protocol_name: str, protocol_version: str) -> str:
+    return (
+        f"{normalize_protocol_component(protocol_name, 'protocol_name')}/"
+        f"{normalize_protocol_component(protocol_version, 'protocol_version')}"
+    )
 
 
 def unique_preserving_order(values: list[str]) -> list[str]:
@@ -196,6 +230,66 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     FOREIGN KEY (harness_id) REFERENCES harnesses(harness_id),
     UNIQUE(local_part, project_pk)
 );
+
+CREATE TABLE IF NOT EXISTS mailbox_protocols (
+    protocol_id             INTEGER PRIMARY KEY,
+    protocol_name           TEXT NOT NULL,
+    protocol_version        TEXT NOT NULL,
+    schema_json             TEXT,
+    created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(protocol_name, protocol_version)
+);
+
+CREATE TABLE IF NOT EXISTS mailbox_protocol_accepts (
+    mailbox_protocol_accept_id INTEGER PRIMARY KEY,
+    mailbox_id                 INTEGER NOT NULL,
+    protocol_id                INTEGER NOT NULL,
+    is_default                 INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (mailbox_id) REFERENCES mailboxes(mailbox_id) ON DELETE CASCADE,
+    FOREIGN KEY (protocol_id) REFERENCES mailbox_protocols(protocol_id) ON DELETE CASCADE,
+    UNIQUE(mailbox_id, protocol_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_protocol_accepts_default
+ON mailbox_protocol_accepts(mailbox_id)
+WHERE is_default = 1;
+
+CREATE INDEX IF NOT EXISTS idx_mailbox_protocol_accepts_mailbox
+ON mailbox_protocol_accepts(mailbox_id, protocol_id);
+
+CREATE TABLE IF NOT EXISTS mailbox_threads (
+    thread_id                 TEXT PRIMARY KEY,
+    protocol_name             TEXT,
+    protocol_version          TEXT,
+    state_name                TEXT,
+    parent_thread_id          TEXT,
+    created_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (parent_thread_id) REFERENCES mailbox_threads(thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mailbox_threads_parent
+ON mailbox_threads(parent_thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS mailbox_thread_handoffs (
+    handoff_id                 INTEGER PRIMARY KEY,
+    from_thread_id             TEXT NOT NULL,
+    to_thread_id               TEXT NOT NULL,
+    actor                      TEXT,
+    metadata_json              TEXT,
+    created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (from_thread_id) REFERENCES mailbox_threads(thread_id),
+    FOREIGN KEY (to_thread_id) REFERENCES mailbox_threads(thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mailbox_thread_handoffs_from
+ON mailbox_thread_handoffs(from_thread_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mailbox_thread_handoffs_to
+ON mailbox_thread_handoffs(to_thread_id, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_tokens (
     token_id             INTEGER PRIMARY KEY,
@@ -473,6 +567,216 @@ class SQLiteMailbox:
                 json.dumps(kwargs.get("details"), ensure_ascii=False) if "details" in kwargs else None,
             ),
         )
+
+    def _thread_has_messages(self, conn: sqlite3.Connection, thread_id: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM messages
+            WHERE thread_id = ?
+            LIMIT 1
+            """,
+            (thread_id,),
+        ).fetchone()
+        return row is not None
+
+    def _ensure_registered_protocol(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        protocol_name: str,
+        protocol_version: str,
+    ) -> None:
+        normalized_name = normalize_protocol_component(protocol_name, "protocol_name")
+        normalized_version = normalize_protocol_component(protocol_version, "protocol_version")
+        row = conn.execute(
+            """
+            SELECT protocol_id
+            FROM mailbox_protocols
+            WHERE protocol_name = ? AND protocol_version = ?
+            """,
+            (normalized_name, normalized_version),
+        ).fetchone()
+        if not row:
+            raise ValueError(
+                f"protocol not registered: {format_protocol_ref(normalized_name, normalized_version)}"
+            )
+
+    def _ensure_thread_runtime_row(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        *,
+        parent_thread_id: str | None = None,
+        require_existing_message: bool = False,
+    ) -> None:
+        normalized_thread_id = str(thread_id).strip()
+        if not normalized_thread_id:
+            raise ValueError("thread_id must not be empty")
+        if require_existing_message and not self._thread_has_messages(conn, normalized_thread_id):
+            raise ValueError(f"thread not found: {normalized_thread_id}")
+        existing = conn.execute(
+            """
+            SELECT parent_thread_id
+            FROM mailbox_threads
+            WHERE thread_id = ?
+            """,
+            (normalized_thread_id,),
+        ).fetchone()
+        if parent_thread_id is not None:
+            normalized_parent_thread_id = str(parent_thread_id).strip()
+            if not normalized_parent_thread_id:
+                raise ValueError("parent_thread_id must not be empty")
+            if normalized_parent_thread_id == normalized_thread_id:
+                raise ValueError("parent_thread_id must differ from thread_id")
+            if not self._thread_has_messages(conn, normalized_parent_thread_id):
+                raise ValueError(f"parent thread not found: {normalized_parent_thread_id}")
+            self._ensure_thread_runtime_row(
+                conn,
+                normalized_parent_thread_id,
+                require_existing_message=True,
+            )
+        else:
+            normalized_parent_thread_id = None
+
+        now = utc_now()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO mailbox_threads(
+                    thread_id, protocol_name, protocol_version, state_name,
+                    parent_thread_id, created_at, updated_at
+                ) VALUES (?, NULL, NULL, NULL, ?, ?, ?)
+                """,
+                (normalized_thread_id, normalized_parent_thread_id, now, now),
+            )
+            return
+        if normalized_parent_thread_id is not None and existing["parent_thread_id"] != normalized_parent_thread_id:
+            conn.execute(
+                """
+                UPDATE mailbox_threads
+                SET parent_thread_id = ?, updated_at = ?
+                WHERE thread_id = ?
+                """,
+                (normalized_parent_thread_id, now, normalized_thread_id),
+            )
+
+    def _load_mailbox_protocol_bindings_by_mailbox_id(
+        self,
+        conn: sqlite3.Connection,
+        mailbox_ids: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        if not mailbox_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in mailbox_ids)
+        rows = conn.execute(
+            f"""
+            SELECT
+                mpa.mailbox_id,
+                mp.protocol_name,
+                mp.protocol_version,
+                mpa.is_default,
+                mp.schema_json
+            FROM mailbox_protocol_accepts mpa
+            JOIN mailbox_protocols mp ON mp.protocol_id = mpa.protocol_id
+            WHERE mpa.mailbox_id IN ({placeholders})
+            ORDER BY mpa.mailbox_id ASC, mpa.is_default DESC, mp.protocol_name ASC, mp.protocol_version ASC
+            """,
+            tuple(mailbox_ids),
+        ).fetchall()
+        bindings: dict[int, dict[str, Any]] = {
+            mailbox_id: {"accepted_protocols": [], "default_protocol": None} for mailbox_id in mailbox_ids
+        }
+        for row in rows:
+            protocol_payload = {
+                "protocol": format_protocol_ref(row["protocol_name"], row["protocol_version"]),
+                "protocol_name": row["protocol_name"],
+                "protocol_version": row["protocol_version"],
+                "schema": json.loads(row["schema_json"]) if row["schema_json"] else None,
+                "is_default": bool(row["is_default"]),
+            }
+            mailbox_payload = bindings.setdefault(
+                int(row["mailbox_id"]),
+                {"accepted_protocols": [], "default_protocol": None},
+            )
+            mailbox_payload["accepted_protocols"].append(protocol_payload)
+            if bool(row["is_default"]):
+                mailbox_payload["default_protocol"] = protocol_payload["protocol"]
+        return bindings
+
+    def _load_thread_handoffs(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        thread_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        if direction not in {"incoming", "outgoing"}:
+            raise ValueError("direction must be incoming or outgoing")
+        source_column = "from_thread_id" if direction == "outgoing" else "to_thread_id"
+        related_column = "to_thread_id" if direction == "outgoing" else "from_thread_id"
+        rows = conn.execute(
+            f"""
+            SELECT handoff_id, {related_column} AS related_thread_id, actor, metadata_json, created_at
+            FROM mailbox_thread_handoffs
+            WHERE {source_column} = ?
+            ORDER BY created_at ASC, handoff_id ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+        return [
+            {
+                "handoff_id": int(row["handoff_id"]),
+                "related_thread_id": row["related_thread_id"],
+                "actor": row["actor"],
+                "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None,
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def _load_thread_runtime_metadata(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        *,
+        include_relations: bool,
+    ) -> dict[str, Any]:
+        row = conn.execute(
+            """
+            SELECT thread_id, protocol_name, protocol_version, state_name, parent_thread_id, created_at, updated_at
+            FROM mailbox_threads
+            WHERE thread_id = ?
+            """,
+            (thread_id,),
+        ).fetchone()
+        protocol_payload = None
+        state_name = None
+        parent_thread_id = None
+        created_at = None
+        updated_at = None
+        if row is not None:
+            if row["protocol_name"] and row["protocol_version"]:
+                protocol_payload = {
+                    "protocol": format_protocol_ref(row["protocol_name"], row["protocol_version"]),
+                    "protocol_name": row["protocol_name"],
+                    "protocol_version": row["protocol_version"],
+                }
+            state_name = row["state_name"]
+            parent_thread_id = row["parent_thread_id"]
+            created_at = row["created_at"]
+            updated_at = row["updated_at"]
+        payload: dict[str, Any] = {
+            "protocol": protocol_payload,
+            "state": state_name,
+            "parent_thread_id": parent_thread_id,
+            "thread_runtime_created_at": created_at,
+            "thread_runtime_updated_at": updated_at,
+        }
+        if include_relations:
+            payload["outgoing_handoffs"] = self._load_thread_handoffs(conn, thread_id=thread_id, direction="outgoing")
+            payload["incoming_handoffs"] = self._load_thread_handoffs(conn, thread_id=thread_id, direction="incoming")
+        return payload
 
     def _load_message(self, conn: sqlite3.Connection, message_id: str) -> Optional[dict[str, Any]]:
         row = conn.execute(
@@ -1526,6 +1830,10 @@ class SQLiteMailbox:
                     normalized_project_id,
                 ),
             ).fetchall()
+            protocol_bindings = self._load_mailbox_protocol_bindings_by_mailbox_id(
+                conn,
+                [int(row["mailbox_id"]) for row in rows],
+            )
             return [
                 {
                     "mailbox_id": row["mailbox_id"],
@@ -1537,11 +1845,308 @@ class SQLiteMailbox:
                     "enabled": bool(row["enabled"]),
                     "accept_messages": bool(row["accept_messages"]),
                     "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None,
+                    "accepted_protocols": protocol_bindings.get(int(row["mailbox_id"]), {}).get("accepted_protocols", []),
+                    "default_protocol": protocol_bindings.get(int(row["mailbox_id"]), {}).get("default_protocol"),
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                 }
                 for row in rows
             ]
+
+    def register_protocol(
+        self,
+        *,
+        protocol_name: str,
+        protocol_version: str,
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_name = normalize_protocol_component(protocol_name, "protocol_name")
+        normalized_version = normalize_protocol_component(protocol_version, "protocol_version")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mailbox_protocols(protocol_name, protocol_version, schema_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_name, protocol_version) DO UPDATE SET
+                    schema_json = excluded.schema_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_name,
+                    normalized_version,
+                    json.dumps(schema, ensure_ascii=False) if schema is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT protocol_id, created_at, updated_at, schema_json
+                FROM mailbox_protocols
+                WHERE protocol_name = ? AND protocol_version = ?
+                """,
+                (normalized_name, normalized_version),
+            ).fetchone()
+            assert row is not None
+            return {
+                "protocol_id": int(row["protocol_id"]),
+                "protocol": format_protocol_ref(normalized_name, normalized_version),
+                "protocol_name": normalized_name,
+                "protocol_version": normalized_version,
+                "schema": json.loads(row["schema_json"]) if row["schema_json"] else None,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    def list_protocols(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT protocol_id, protocol_name, protocol_version, schema_json, created_at, updated_at
+                FROM mailbox_protocols
+                ORDER BY protocol_name ASC, protocol_version ASC
+                """
+            ).fetchall()
+            return [
+                {
+                    "protocol_id": int(row["protocol_id"]),
+                    "protocol": format_protocol_ref(row["protocol_name"], row["protocol_version"]),
+                    "protocol_name": row["protocol_name"],
+                    "protocol_version": row["protocol_version"],
+                    "schema": json.loads(row["schema_json"]) if row["schema_json"] else None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ]
+
+    def set_mailbox_protocols(
+        self,
+        *,
+        address: str,
+        accepts: list[str],
+        default_protocol: str | None = None,
+    ) -> dict[str, Any]:
+        mailbox = self.resolve_address(address)
+        if not accepts:
+            raise ValueError("accepts must contain at least one protocol")
+        normalized_accepts: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        plaintext_versions: set[str] = set()
+        for protocol_ref in accepts:
+            protocol_name, protocol_version = parse_protocol_ref(protocol_ref)
+            candidate = (protocol_name, protocol_version)
+            if candidate in seen:
+                raise ValueError(f"duplicate protocol in accepts: {format_protocol_ref(protocol_name, protocol_version)}")
+            seen.add(candidate)
+            normalized_accepts.append(candidate)
+            if protocol_name == "PlainText":
+                plaintext_versions.add(protocol_version)
+        if len(plaintext_versions) > 1:
+            raise ValueError("a mailbox may accept at most one PlainText version")
+        normalized_default: tuple[str, str] | None = None
+        if default_protocol is not None:
+            normalized_default = parse_protocol_ref(default_protocol)
+            if normalized_default not in seen:
+                raise ValueError("default_protocol must also appear in accepts")
+            if normalized_default[0] != "PlainText":
+                raise ValueError("default_protocol must belong to PlainText/*")
+
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for protocol_name, protocol_version in normalized_accepts:
+                    self._ensure_registered_protocol(
+                        conn,
+                        protocol_name=protocol_name,
+                        protocol_version=protocol_version,
+                    )
+                conn.execute(
+                    "DELETE FROM mailbox_protocol_accepts WHERE mailbox_id = ?",
+                    (mailbox.mailbox_id,),
+                )
+                for protocol_name, protocol_version in normalized_accepts:
+                    protocol_row = conn.execute(
+                        """
+                        SELECT protocol_id
+                        FROM mailbox_protocols
+                        WHERE protocol_name = ? AND protocol_version = ?
+                        """,
+                        (protocol_name, protocol_version),
+                    ).fetchone()
+                    assert protocol_row is not None
+                    conn.execute(
+                        """
+                        INSERT INTO mailbox_protocol_accepts(
+                            mailbox_id, protocol_id, is_default, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            mailbox.mailbox_id,
+                            int(protocol_row["protocol_id"]),
+                            int(normalized_default == (protocol_name, protocol_version)),
+                            now,
+                            now,
+                        ),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_mailbox_protocols(address=mailbox.address)
+
+    def get_mailbox_protocols(self, *, address: str) -> dict[str, Any]:
+        mailbox = self.resolve_address(address)
+        with self.connect() as conn:
+            bindings = self._load_mailbox_protocol_bindings_by_mailbox_id(conn, [mailbox.mailbox_id]).get(
+                mailbox.mailbox_id,
+                {"accepted_protocols": [], "default_protocol": None},
+            )
+            return {
+                "address": mailbox.address,
+                "mailbox_id": mailbox.mailbox_id,
+                "accepted_protocols": bindings.get("accepted_protocols", []),
+                "default_protocol": bindings.get("default_protocol"),
+            }
+
+    def set_thread_runtime(
+        self,
+        *,
+        thread_id: str,
+        protocol_name: Any = _UNSET,
+        protocol_version: Any = _UNSET,
+        state_name: Any = _UNSET,
+        parent_thread_id: Any = _UNSET,
+    ) -> dict[str, Any]:
+        normalized_thread_id = str(thread_id).strip()
+        if not normalized_thread_id:
+            raise ValueError("thread_id must not be empty")
+        normalized_protocol_name = None if protocol_name is _UNSET or protocol_name is None else normalize_protocol_component(protocol_name, "protocol_name")
+        normalized_protocol_version = None if protocol_version is _UNSET or protocol_version is None else normalize_protocol_component(protocol_version, "protocol_version")
+        normalized_state_name = None if state_name is _UNSET or state_name is None else normalize_protocol_component(state_name, "state_name")
+        resolved_parent = _UNSET
+        if parent_thread_id is not _UNSET:
+            resolved_parent = None if parent_thread_id is None else str(parent_thread_id).strip()
+            if resolved_parent == "":
+                raise ValueError("parent_thread_id must not be empty")
+        if (protocol_name is _UNSET) != (protocol_version is _UNSET):
+            raise ValueError("protocol_name and protocol_version must be set together")
+        if (normalized_protocol_name is None) != (normalized_protocol_version is None):
+            raise ValueError("protocol_name and protocol_version must both be null or both be non-null")
+
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_thread_runtime_row(conn, normalized_thread_id, require_existing_message=True)
+                if normalized_protocol_name is not None and normalized_protocol_version is not None:
+                    self._ensure_registered_protocol(
+                        conn,
+                        protocol_name=normalized_protocol_name,
+                        protocol_version=normalized_protocol_version,
+                    )
+                if resolved_parent is not _UNSET and resolved_parent is not None:
+                    self._ensure_thread_runtime_row(
+                        conn,
+                        normalized_thread_id,
+                        parent_thread_id=resolved_parent,
+                        require_existing_message=True,
+                    )
+                now = utc_now()
+                current = conn.execute(
+                    """
+                    SELECT protocol_name, protocol_version, state_name, parent_thread_id
+                    FROM mailbox_threads
+                    WHERE thread_id = ?
+                    """,
+                    (normalized_thread_id,),
+                ).fetchone()
+                assert current is not None
+                effective_protocol_name = current["protocol_name"] if protocol_name is _UNSET else normalized_protocol_name
+                effective_protocol_version = current["protocol_version"] if protocol_version is _UNSET else normalized_protocol_version
+                effective_state_name = current["state_name"] if state_name is _UNSET else normalized_state_name
+                effective_parent = current["parent_thread_id"] if resolved_parent is _UNSET else resolved_parent
+                conn.execute(
+                    """
+                    UPDATE mailbox_threads
+                    SET protocol_name = ?, protocol_version = ?, state_name = ?, parent_thread_id = ?, updated_at = ?
+                    WHERE thread_id = ?
+                    """,
+                    (
+                        effective_protocol_name,
+                        effective_protocol_version,
+                        effective_state_name,
+                        effective_parent,
+                        now,
+                        normalized_thread_id,
+                    ),
+                )
+                conn.commit()
+                return {
+                    "thread_id": normalized_thread_id,
+                    **self._load_thread_runtime_metadata(conn, normalized_thread_id, include_relations=True),
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+    def record_thread_handoff(
+        self,
+        *,
+        from_thread_id: str,
+        to_thread_id: str,
+        actor: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_from_thread_id = str(from_thread_id).strip()
+        normalized_to_thread_id = str(to_thread_id).strip()
+        if not normalized_from_thread_id:
+            raise ValueError("from_thread_id must not be empty")
+        if not normalized_to_thread_id:
+            raise ValueError("to_thread_id must not be empty")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_thread_runtime_row(conn, normalized_from_thread_id, require_existing_message=True)
+                self._ensure_thread_runtime_row(conn, normalized_to_thread_id, require_existing_message=True)
+                cursor = conn.execute(
+                    """
+                    INSERT INTO mailbox_thread_handoffs(from_thread_id, to_thread_id, actor, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_from_thread_id,
+                        normalized_to_thread_id,
+                        actor,
+                        json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                        now,
+                    ),
+                )
+                handoff_id = int(cursor.lastrowid)
+                self._event(
+                    conn,
+                    "thread.handoff",
+                    actor=actor,
+                    details={
+                        "handoff_id": handoff_id,
+                        "from_thread_id": normalized_from_thread_id,
+                        "to_thread_id": normalized_to_thread_id,
+                    },
+                )
+                conn.commit()
+                return {
+                    "handoff_id": handoff_id,
+                    "from_thread_id": normalized_from_thread_id,
+                    "to_thread_id": normalized_to_thread_id,
+                    "actor": actor,
+                    "metadata": metadata,
+                    "created_at": now,
+                }
+            except Exception:
+                conn.rollback()
+                raise
 
     def authenticate_harness_token(self, token: str) -> str | None:
         if not isinstance(token, str):
@@ -1954,6 +2559,10 @@ class SQLiteMailbox:
         expires_in_seconds: Optional[int] = None,
         max_attempts: int = 8,
         bypass_routing: bool = False,
+        thread_protocol_name: Optional[str] = None,
+        thread_protocol_version: Optional[str] = None,
+        thread_state: Optional[str] = None,
+        parent_thread_id: Optional[str] = None,
     ) -> dict[str, Any]:
         src = self.resolve_address(from_address)
         dst = self.resolve_address(to_address)
@@ -2015,6 +2624,54 @@ class SQLiteMailbox:
                         now,
                     ),
                 )
+                self._ensure_thread_runtime_row(
+                    conn,
+                    thread_id,
+                    parent_thread_id=parent_thread_id,
+                    require_existing_message=True,
+                )
+                if (thread_protocol_name is None) != (thread_protocol_version is None):
+                    raise ValueError("thread_protocol_name and thread_protocol_version must be set together")
+                if thread_protocol_name is not None and thread_protocol_version is not None:
+                    normalized_protocol_name = normalize_protocol_component(thread_protocol_name, "thread_protocol_name")
+                    normalized_protocol_version = normalize_protocol_component(
+                        thread_protocol_version,
+                        "thread_protocol_version",
+                    )
+                    self._ensure_registered_protocol(
+                        conn,
+                        protocol_name=normalized_protocol_name,
+                        protocol_version=normalized_protocol_version,
+                    )
+                    normalized_thread_state = (
+                        normalize_protocol_component(thread_state, "thread_state") if thread_state is not None else None
+                    )
+                    current_thread_row = conn.execute(
+                        """
+                        SELECT parent_thread_id
+                        FROM mailbox_threads
+                        WHERE thread_id = ?
+                        """,
+                        (thread_id,),
+                    ).fetchone()
+                    effective_parent_thread_id = (
+                        current_thread_row["parent_thread_id"] if current_thread_row is not None else None
+                    )
+                    conn.execute(
+                        """
+                        UPDATE mailbox_threads
+                        SET protocol_name = ?, protocol_version = ?, state_name = ?, parent_thread_id = ?, updated_at = ?
+                        WHERE thread_id = ?
+                        """,
+                        (
+                            normalized_protocol_name,
+                            normalized_protocol_version,
+                            normalized_thread_state,
+                            effective_parent_thread_id,
+                            now,
+                            thread_id,
+                        ),
+                    )
                 cursor = conn.execute(
                     """
                     INSERT INTO deliveries(
@@ -2352,6 +3009,21 @@ class SQLiteMailbox:
             ).fetchone()
             return row is not None
 
+    def _build_thread_payload(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        thread_id: str,
+        messages: list[dict[str, Any]],
+        include_relations: bool,
+    ) -> dict[str, Any]:
+        return {
+            "thread_id": thread_id,
+            "message_count": len(messages),
+            "messages": messages,
+            **self._load_thread_runtime_metadata(conn, thread_id, include_relations=include_relations),
+        }
+
     def get_thread(
         self,
         *,
@@ -2365,11 +3037,12 @@ class SQLiteMailbox:
             messages = self._load_thread_messages(conn, resolved_thread_id)
             if not messages:
                 return None
-            return {
-                "thread_id": resolved_thread_id,
-                "message_count": len(messages),
-                "messages": messages,
-            }
+            return self._build_thread_payload(
+                conn,
+                thread_id=resolved_thread_id,
+                messages=messages,
+                include_relations=True,
+            )
 
     def get_message_for_harness(self, message_id: str, harness_id: str) -> Optional[dict[str, Any]]:
         harness_id = normalize_harness_id(harness_id)
@@ -2435,11 +3108,12 @@ class SQLiteMailbox:
             if not visible_message_ids:
                 return None
             messages = self._load_thread_messages(conn, resolved_thread_id, visible_message_ids=visible_message_ids)
-            return {
-                "thread_id": resolved_thread_id,
-                "message_count": len(messages),
-                "messages": messages,
-            }
+            return self._build_thread_payload(
+                conn,
+                thread_id=resolved_thread_id,
+                messages=messages,
+                include_relations=False,
+            )
 
     def get_message_for_addresses(self, message_id: str, addresses: list[str]) -> Optional[dict[str, Any]]:
         canonical_addresses = unique_preserving_order([canonicalize_address(address) for address in addresses])
@@ -2512,11 +3186,12 @@ class SQLiteMailbox:
             if not visible_message_ids:
                 return None
             messages = self._load_thread_messages(conn, resolved_thread_id, visible_message_ids=visible_message_ids)
-            return {
-                "thread_id": resolved_thread_id,
-                "message_count": len(messages),
-                "messages": messages,
-            }
+            return self._build_thread_payload(
+                conn,
+                thread_id=resolved_thread_id,
+                messages=messages,
+                include_relations=False,
+            )
 
     def _load_visible_message_rows_for_mailbox(
         self,
