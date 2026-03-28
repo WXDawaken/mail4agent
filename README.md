@@ -334,6 +334,8 @@ The current DSL slice supports:
 
 - `protocol`
 - `mailbox` canonical form and shorthand
+- `let` bindings for bounded literals, input aliases, and thread aliases
+- optional `let name: Type = ...` annotations, including `thread<Protocol/version>`
 - `send to <mailbox> using Protocol.Message`
 - `send to <thread> using Message`
 - `send text to <mailbox>`
@@ -341,6 +343,7 @@ The current DSL slice supports:
 - `handoff <thread> -> <thread>`
 
 `check` and `lower` now also validate declared source field types for the bounded DSL slice before contacting the mailbox server. Primitive mismatches such as `String` vs `123` and list-shape mismatches such as `[OrderItem]` vs `"sku-1"` are returned as structured `E_PAYLOAD_SCHEMA_INVALID` diagnostics from the interpreter.
+They also validate bounded `let` annotations locally, so mismatched `let order_id: String = 123;` or `let t: thread<Support/v1> = send ... Orders/v2 ...;` programs fail before runtime.
 
 For `dsl_program`, use:
 

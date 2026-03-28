@@ -37,6 +37,36 @@ protocol Orders/v2 {
 
 
 class MailboxLanguageSourceTests(unittest.TestCase):
+    def test_lower_source_program_supports_typed_value_bindings_and_thread_alias(self) -> None:
+        lowered = lower_source_program(
+            orders_protocol_source()
+            + """
+mailbox reviewer_mb : Orders/v2;
+
+let order_id: String = "123";
+let items: [OrderItem] = ["sku-1"];
+let review_t: thread<Orders/v2> = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: order_id;
+  items: items;
+};
+let review_alias: thread<Orders/v2> = review_t;
+
+send to review_alias using Approve {
+  order_id: order_id;
+};
+""",
+            mailbox_addresses={"reviewer_mb": "reviewer@mail4agent.codex"},
+            from_address="operator@mail4agent.codex",
+        )
+
+        self.assertEqual(len(lowered["operations"]), 2)
+        self.assertEqual(lowered["operations"][0]["artifact"]["payload"]["order_id"], "123")
+        self.assertEqual(lowered["operations"][0]["artifact"]["payload"]["items"], ["sku-1"])
+        self.assertEqual(lowered["operations"][1]["artifact"]["thread_var"], "review_alias")
+        self.assertEqual(lowered["thread_bindings"]["review_t"]["protocol"], "Orders/v2")
+        self.assertEqual(lowered["thread_bindings"]["review_alias"]["protocol"], "Orders/v2")
+        self.assertEqual(lowered["thread_bindings"]["review_alias"]["state"], "Done")
+
     def test_lower_source_program_tracks_thread_state_for_mailbox_and_thread_send(self) -> None:
         lowered = lower_source_program(
             orders_protocol_source()
@@ -194,6 +224,50 @@ let text_t = send text to support_mb {
             )
         self.assertEqual(context.exception.code, "E_PAYLOAD_SCHEMA_INVALID")
         self.assertIn("expected String", str(context.exception))
+
+    def test_lower_source_program_rejects_value_binding_type_mismatch(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                orders_protocol_source()
+                + """
+mailbox reviewer_mb : Orders/v2;
+
+let order_id: String = 123;
+""",
+                mailbox_addresses={"reviewer_mb": "reviewer@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_SOURCE_TYPE_INVALID")
+        self.assertIn("binding order_id expected String", str(context.exception))
+
+    def test_lower_source_program_rejects_thread_annotation_mismatch(self) -> None:
+        with self.assertRaises(MailboxRuntimeError) as context:
+            lower_source_program(
+                orders_protocol_source()
+                + """
+protocol Support/v1 {
+  state Open;
+  start Open;
+
+  message Reply {
+    body: String;
+  }
+
+  on Reply from Open -> Open;
+}
+
+mailbox reviewer_mb : Orders/v2;
+
+let review_t: thread<Support/v1> = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: "123";
+  items: ["sku-1"];
+};
+""",
+                mailbox_addresses={"reviewer_mb": "reviewer@mail4agent.codex"},
+                from_address="operator@mail4agent.codex",
+            )
+        self.assertEqual(context.exception.code, "E_SOURCE_TYPE_INVALID")
+        self.assertIn("expression returns thread<Orders/v2>", str(context.exception))
 
     def test_lower_source_program_rejects_binding_send_to_existing_thread(self) -> None:
         with self.assertRaises(MailboxRuntimeError) as context:

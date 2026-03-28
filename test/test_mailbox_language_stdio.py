@@ -231,6 +231,49 @@ let review_t = send to reviewer_mb using Orders/v2.QuoteReq {
         self.assertEqual(response["error_code"], "E_PAYLOAD_SCHEMA_INVALID")
         self.assertIn("expected String", response["error"])
 
+    def test_dsl_program_run_supports_typed_value_bindings_and_thread_annotations(self) -> None:
+        env = self.admin_env()
+        source = (
+            orders_protocol_source()
+            + """
+mailbox reviewer_mb : Orders/v2;
+
+let order_id: String = "typed-let-1";
+let items: [OrderItem] = ["sku-1"];
+let review_t: thread<Orders/v2> = send to reviewer_mb using Orders/v2.QuoteReq {
+  order_id: order_id;
+  items: items;
+};
+let review_alias: thread<Orders/v2> = review_t;
+
+send to review_alias using Approve {
+  order_id: order_id;
+};
+"""
+        )
+
+        response = run_stdio_jsonl(
+            env,
+            [
+                {
+                    "id": "dsl-run-typed-let",
+                    "command": "run",
+                    "artifact": {
+                        "kind": "dsl_program",
+                        "source": source,
+                        "mailbox_addresses": {"reviewer_mb": REVIEWER_ADDRESS},
+                        "from_address": OPERATOR_ADDRESS,
+                    },
+                }
+            ],
+        )[0]
+
+        self.assertTrue(response["ok"])
+        run_result = response["run"]
+        self.assertEqual(run_result["operations"][0]["result"]["protocol"], "Orders/v2")
+        self.assertEqual(run_result["operations"][1]["result"]["state"], "Done")
+        self.assertEqual(run_result["thread_bindings"]["review_t"]["thread_id"], run_result["thread_bindings"]["review_alias"]["thread_id"])
+
     def test_protocol_check_and_lower_use_compile_cache(self) -> None:
         cache_dir = self.runtime_dir / "protocol-cache"
         env = self.base_env()

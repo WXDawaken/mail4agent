@@ -421,6 +421,10 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
     configured_mailboxes: list[str] = []
     operation_results: list[dict[str, Any]] = []
     thread_runtime_bindings: dict[str, dict[str, Any]] = {}
+    thread_aliases = {
+        str(name): str(target)
+        for name, target in dict(lowered.get("thread_aliases") or {}).items()
+    }
 
     for protocol_entry in lowered["protocols"]:
         client.register_protocol(
@@ -473,7 +477,11 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
                 envelope["to_address"] = to_address
                 if envelope["op"] == "spawn":
                     parent_thread_var = str(artifact["parent_thread_var"])
-                    parent_binding = thread_runtime_bindings.get(parent_thread_var)
+                    parent_binding = _resolve_runtime_thread_binding(
+                        parent_thread_var,
+                        thread_runtime_bindings=thread_runtime_bindings,
+                        thread_aliases=thread_aliases,
+                    )
                     if parent_binding is None:
                         raise MailboxRuntimeError(
                             "E_SOURCE_REFERENCE_UNKNOWN",
@@ -482,7 +490,11 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
                     envelope["parent_thread_id"] = parent_binding["thread_id"]
             else:
                 thread_var = str(artifact["thread_var"])
-                thread_binding = thread_runtime_bindings.get(thread_var)
+                thread_binding = _resolve_runtime_thread_binding(
+                    thread_var,
+                    thread_runtime_bindings=thread_runtime_bindings,
+                    thread_aliases=thread_aliases,
+                )
                 if thread_binding is None:
                     raise MailboxRuntimeError(
                         "E_SOURCE_REFERENCE_UNKNOWN",
@@ -511,7 +523,11 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
                 }
             elif artifact["target_kind"] == "thread":
                 thread_var = str(artifact["thread_var"])
-                existing = thread_runtime_bindings.get(thread_var)
+                existing = _resolve_runtime_thread_binding(
+                    thread_var,
+                    thread_runtime_bindings=thread_runtime_bindings,
+                    thread_aliases=thread_aliases,
+                )
                 if existing is not None:
                     existing["state"] = str(result["state"])
             operation_results.append({"kind": operation_kind, "result": result})
@@ -521,8 +537,16 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
             artifact = operation["artifact"]
             from_thread_var = str(artifact["from_thread_var"])
             to_thread_var = str(artifact["to_thread_var"])
-            from_binding = thread_runtime_bindings.get(from_thread_var)
-            to_binding = thread_runtime_bindings.get(to_thread_var)
+            from_binding = _resolve_runtime_thread_binding(
+                from_thread_var,
+                thread_runtime_bindings=thread_runtime_bindings,
+                thread_aliases=thread_aliases,
+            )
+            to_binding = _resolve_runtime_thread_binding(
+                to_thread_var,
+                thread_runtime_bindings=thread_runtime_bindings,
+                thread_aliases=thread_aliases,
+            )
             if from_binding is None or to_binding is None:
                 missing = from_thread_var if from_binding is None else to_thread_var
                 raise MailboxRuntimeError(
@@ -541,12 +565,46 @@ def _run_dsl_program(*, lowered: dict[str, Any], client: MailboxHTTPClient) -> d
 
         raise MailboxRuntimeError("E_SOURCE_TYPE_INVALID", f"unknown lowered operation kind: {operation_kind}")
 
+    materialized_bindings = dict(thread_runtime_bindings)
+    for alias_name in thread_aliases:
+        alias_binding = _resolve_runtime_thread_binding(
+            alias_name,
+            thread_runtime_bindings=thread_runtime_bindings,
+            thread_aliases=thread_aliases,
+        )
+        if alias_binding is not None:
+            materialized_bindings[alias_name] = dict(alias_binding)
+
     return {
         "protocols_registered": registered_protocols,
         "mailboxes_configured": configured_mailboxes,
         "operations": operation_results,
-        "thread_bindings": thread_runtime_bindings,
+        "thread_bindings": materialized_bindings,
     }
+
+
+def _resolve_runtime_thread_binding(
+    thread_var: str,
+    *,
+    thread_runtime_bindings: dict[str, dict[str, Any]],
+    thread_aliases: dict[str, str],
+) -> dict[str, Any] | None:
+    current = str(thread_var)
+    seen: set[str] = set()
+    while True:
+        if current in seen:
+            raise MailboxRuntimeError(
+                "E_SOURCE_DECLARATION_INVALID",
+                f"cyclic thread alias detected for {thread_var}",
+            )
+        seen.add(current)
+        binding = thread_runtime_bindings.get(current)
+        if binding is not None:
+            return binding
+        alias_target = thread_aliases.get(current)
+        if alias_target is None:
+            return None
+        current = alias_target
 
 
 def _resolve_base_url(*, request: dict[str, Any], args: argparse.Namespace) -> str:
