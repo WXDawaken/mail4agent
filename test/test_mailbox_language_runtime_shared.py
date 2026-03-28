@@ -4,7 +4,9 @@ import unittest
 
 from mailbox_language_runtime import (
     MailboxRuntimeError,
+    compile_protocol_runtime_schema,
     format_protocol_ref,
+    lookup_message_schema,
     parse_protocol_ref,
     resolve_transition_target_state,
     validate_message_payload,
@@ -87,6 +89,27 @@ class MailboxLanguageRuntimeSharedTests(unittest.TestCase):
         next_state = resolve_transition_target_state(
             protocol_ref="Orders/v2",
             schema=schema,
+            from_state="Init",
+            msg_type="QuoteReq",
+        )
+        self.assertEqual(next_state, "AwaitDecision")
+
+    def test_compiled_protocol_runtime_artifact_supports_payload_and_transition_checks(self) -> None:
+        compiled = compile_protocol_runtime_schema(
+            orders_protocol_schema(),
+            protocol_name="Orders",
+            protocol_version="v2",
+        )
+        message_schema = lookup_message_schema(compiled, msg_type="QuoteReq")
+        validate_message_payload(
+            protocol_ref="Orders/v2",
+            msg_type="QuoteReq",
+            payload={"order_id": "123", "items": ["sku-1"]},
+            message_schema=message_schema,
+        )
+        next_state = resolve_transition_target_state(
+            protocol_ref="Orders/v2",
+            schema=compiled,
             from_state="Init",
             msg_type="QuoteReq",
         )

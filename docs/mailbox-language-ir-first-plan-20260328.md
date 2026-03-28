@@ -160,6 +160,7 @@ Notes:
 - The current bounded implementation now exposes that surface through `codex_mailbox_client.py` and `client.py`: protocol registry helpers plus `typed-send` / `typed-spawn` / `typed-handoff` now lower directly into normalized envelope and handoff artifacts without requiring raw admin JSON.
 - This first typed surface is still admin-backed for now. The next step is the separate native-stdio interpreter, not server-side DSL parsing.
 - The protocol/runtime rules are now also shared in a dedicated module (`mailbox_language_runtime.py`) instead of living only inside `sqlite_mailbox.py`; the future interpreter can reuse the same protocol-ref normalization, schema checks, payload checks, and transition resolution logic.
+- Those shared runtime rules now also support explicit protocol compilation plus local disk caching through `compile_protocol_runtime_schema(...)` and `mailbox_language_cache.py`, so a future interpreter can cache static protocol validation artifacts locally without turning mailbox/thread/runtime checks into cached truth.
 
 ## Phase 3: Stdio Interpreter MVP
 
