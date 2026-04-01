@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("operator", "salvage_run_dev", "game_engine_dev")]
+    [ValidateSet("operator", "plugin_dev", "core_dev", "salvage_run_dev", "game_engine_dev")]
     [string]$Role,
     [string]$RuntimeDir = ".tmp_dogfood",
     [string]$ReasoningEffort,
@@ -44,6 +44,16 @@ $profileMap = @{
             "--mailbox-type", "group",
             "--agent-name", "dogfood-operator"
         )
+    }
+    plugin_dev = @{
+        ConfigFile = "plugin_dev.mailbox_client.json"
+        PromptFile = "docs\anchor-agent-plugin-dev-oncall-prompt.txt"
+        DefaultEffort = "high"
+    }
+    core_dev = @{
+        ConfigFile = "core_dev.mailbox_client.json"
+        PromptFile = "docs\anchor-agent-core-dev-oncall-prompt.txt"
+        DefaultEffort = "high"
     }
     salvage_run_dev = @{
         ConfigFile = "salvage_run_dev.mailbox_client.json"

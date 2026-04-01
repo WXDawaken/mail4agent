@@ -28,6 +28,14 @@ ROLE_SPECS: dict[str, AppServerRoleSpec] = {
         config_file="operator.mailbox_client.json",
         prompt_file="docs/dogfood-high-operator-oncall-prompt.txt",
     ),
+    "plugin_dev": AppServerRoleSpec(
+        config_file="plugin_dev.mailbox_client.json",
+        prompt_file="docs/anchor-agent-plugin-dev-oncall-prompt.txt",
+    ),
+    "core_dev": AppServerRoleSpec(
+        config_file="core_dev.mailbox_client.json",
+        prompt_file="docs/anchor-agent-core-dev-oncall-prompt.txt",
+    ),
     "salvage_run_dev": AppServerRoleSpec(
         config_file="salvage_run_dev.mailbox_client.json",
         prompt_file="docs/salvage-run-dev-oncall-prompt.txt",
@@ -896,7 +904,7 @@ def _build_prompt_text(
         "\nOncall rules:\n"
         f"1. The supervisor already claimed this delivery. Do not run python \"{mailbox_client_path}\" claim.\n"
         f"2. Read the thread with python \"{mailbox_client_path}\" --format text thread --message-id {message_id}.\n"
-        "3. Keep the task bounded to one mailbox-native operator update in this repo.\n"
+        "3. Keep the task bounded to one mailbox-native, role-owned update in this repo.\n"
         "4. Run focused validation for the exact surface you changed.\n"
         "5. Reply exactly once with:\n"
         f"   python \"{mailbox_client_path}\" reply --delivery-file \"{sandbox_delivery_path}\" --idempotency-key \"oncall-{delivery_id}-reply\" --payload-json '{{...}}'\n"

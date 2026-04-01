@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("operator", "salvage_run_dev", "game_engine_dev")]
+    [ValidateSet("operator", "plugin_dev", "core_dev", "salvage_run_dev", "game_engine_dev")]
     [string]$Role = "operator",
     [string]$RuntimeDir = ".tmp_dogfood",
     [ValidateSet("codex-cli", "app-server")]

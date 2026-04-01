@@ -135,10 +135,36 @@ def main() -> None:
         },
     )
 
+    role_specs = {
+        "plugin_dev": {
+            "local_part": "plugin_dev",
+            "agent_name": "anchor-agent-plugin-dev-oncall",
+            "consumer_id": "anchor-agent-plugin-dev-oncall",
+        },
+        "core_dev": {
+            "local_part": "core_dev",
+            "agent_name": "anchor-agent-core-dev-oncall",
+            "consumer_id": "anchor-agent-core-dev-oncall",
+        },
+        "salvage_run_dev": {
+            "local_part": "salvage_run_dev",
+            "agent_name": "salvage-run-dev-oncall",
+            "consumer_id": "salvage-run-dev-oncall",
+        },
+        "game_engine_dev": {
+            "local_part": "game_engine_dev",
+            "agent_name": "game-engine-dev-oncall",
+            "consumer_id": "game-engine-dev-oncall",
+        },
+        "coordinator": {
+            "local_part": "coordinator",
+            "agent_name": "subagent-lab-coordinator",
+            "consumer_id": "subagent-lab-coordinator",
+        },
+    }
     role_addresses = {
-        "salvage_run_dev": f"salvage_run_dev@{project_id}.{harness_id}",
-        "game_engine_dev": f"game_engine_dev@{project_id}.{harness_id}",
-        "coordinator": f"coordinator@{project_id}.{harness_id}",
+        role: f"{spec['local_part']}@{project_id}.{harness_id}"
+        for role, spec in role_specs.items()
     }
     for address in role_addresses.values():
         _request_json(
@@ -166,90 +192,57 @@ def main() -> None:
     )
     harness_token = str(token_payload["token"])
 
-    salvage_preview = _preview_mailbox_identity(
-        base_url=base_url,
-        admin_token=admin_token,
-        harness_id=harness_id,
-        project_id=project_id,
-        local_part="salvage_run_dev",
-        mailbox_type="group",
-        agent_name="salvage-run-dev-oncall",
-    )
-    engine_preview = _preview_mailbox_identity(
-        base_url=base_url,
-        admin_token=admin_token,
-        harness_id=harness_id,
-        project_id=project_id,
-        local_part="game_engine_dev",
-        mailbox_type="group",
-        agent_name="game-engine-dev-oncall",
-    )
-    coordinator_preview = _preview_mailbox_identity(
-        base_url=base_url,
-        admin_token=admin_token,
-        harness_id=harness_id,
-        project_id=project_id,
-        local_part="coordinator",
-        mailbox_type="group",
-        agent_name="subagent-lab-coordinator",
-    )
-
-    salvage_config = {
-        "base_url": base_url,
-        "from_address": salvage_preview.get("default_from_address"),
-        "inbox_address": (salvage_preview.get("default_claim_addresses") or [None])[0],
-        "project_id": project_id,
-        "local_part": "salvage_run_dev",
-        "mailbox_type": "group",
-        "agent_name": "salvage-run-dev-oncall",
-        "consumer_id": "salvage-run-dev-oncall",
-    }
-    engine_config = {
-        "base_url": base_url,
-        "from_address": engine_preview.get("default_from_address"),
-        "inbox_address": (engine_preview.get("default_claim_addresses") or [None])[0],
-        "project_id": project_id,
-        "local_part": "game_engine_dev",
-        "mailbox_type": "group",
-        "agent_name": "game-engine-dev-oncall",
-        "consumer_id": "game-engine-dev-oncall",
-    }
-    coordinator_config = {
-        "base_url": base_url,
-        "from_address": coordinator_preview.get("default_from_address"),
-        "inbox_address": (coordinator_preview.get("default_claim_addresses") or [None])[0],
-        "project_id": project_id,
-        "local_part": "coordinator",
-        "mailbox_type": "group",
-        "agent_name": "subagent-lab-coordinator",
-        "consumer_id": "subagent-lab-coordinator",
-    }
+    previews: dict[str, dict[str, Any]] = {}
+    configs: dict[str, dict[str, Any]] = {}
+    for role, spec in role_specs.items():
+        preview = _preview_mailbox_identity(
+            base_url=base_url,
+            admin_token=admin_token,
+            harness_id=harness_id,
+            project_id=project_id,
+            local_part=str(spec["local_part"]),
+            mailbox_type="group",
+            agent_name=str(spec["agent_name"]),
+        )
+        previews[role] = preview
+        configs[role] = {
+            "base_url": base_url,
+            "from_address": preview.get("default_from_address"),
+            "inbox_address": (preview.get("default_claim_addresses") or [None])[0],
+            "project_id": project_id,
+            "local_part": str(spec["local_part"]),
+            "mailbox_type": "group",
+            "agent_name": str(spec["agent_name"]),
+            "consumer_id": str(spec["consumer_id"]),
+        }
 
     harness_token_path = runtime_dir / "harness.token"
     harness_token_path.write_text(harness_token + "\n", encoding="utf-8")
-    salvage_config_path = runtime_dir / "salvage_run_dev.mailbox_client.json"
-    engine_config_path = runtime_dir / "game_engine_dev.mailbox_client.json"
-    coordinator_config_path = runtime_dir / "coordinator.mailbox_client.json"
-    _write_json(salvage_config_path, salvage_config)
-    _write_json(engine_config_path, engine_config)
-    _write_json(coordinator_config_path, coordinator_config)
-    _write_json(runtime_dir / "salvage_run_dev.preview.json", salvage_preview)
-    _write_json(runtime_dir / "game_engine_dev.preview.json", engine_preview)
-    _write_json(runtime_dir / "coordinator.preview.json", coordinator_preview)
+    config_paths: dict[str, Path] = {}
+    for role, config in configs.items():
+        config_path = runtime_dir / f"{role}.mailbox_client.json"
+        preview_path = runtime_dir / f"{role}.preview.json"
+        config_paths[role] = config_path
+        _write_json(config_path, config)
+        _write_json(preview_path, previews[role])
 
     summary = {
         "ok": True,
         "base_url": base_url,
         "harness_id": harness_id,
         "project_id": project_id,
+        "plugin_dev_address": role_addresses["plugin_dev"],
+        "core_dev_address": role_addresses["core_dev"],
         "salvage_run_dev_address": role_addresses["salvage_run_dev"],
         "game_engine_dev_address": role_addresses["game_engine_dev"],
         "coordinator_address": role_addresses["coordinator"],
         "runtime_dir": str(runtime_dir.resolve()),
         "harness_token_file": str(harness_token_path.resolve()),
-        "salvage_run_dev_config_file": str(salvage_config_path.resolve()),
-        "game_engine_dev_config_file": str(engine_config_path.resolve()),
-        "coordinator_config_file": str(coordinator_config_path.resolve()),
+        "plugin_dev_config_file": str(config_paths["plugin_dev"].resolve()),
+        "core_dev_config_file": str(config_paths["core_dev"].resolve()),
+        "salvage_run_dev_config_file": str(config_paths["salvage_run_dev"].resolve()),
+        "game_engine_dev_config_file": str(config_paths["game_engine_dev"].resolve()),
+        "coordinator_config_file": str(config_paths["coordinator"].resolve()),
     }
     _write_json(runtime_dir / "bootstrap_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

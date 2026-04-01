@@ -26,6 +26,14 @@ ROLE_SPECS: dict[str, OncallRoleSpec] = {
         config_file="operator.mailbox_client.json",
         default_reasoning_effort="high",
     ),
+    "plugin_dev": OncallRoleSpec(
+        config_file="plugin_dev.mailbox_client.json",
+        default_reasoning_effort="high",
+    ),
+    "core_dev": OncallRoleSpec(
+        config_file="core_dev.mailbox_client.json",
+        default_reasoning_effort="high",
+    ),
     "salvage_run_dev": OncallRoleSpec(
         config_file="salvage_run_dev.mailbox_client.json",
         default_reasoning_effort="high",
