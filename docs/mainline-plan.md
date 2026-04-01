@@ -44,6 +44,7 @@
 - That same DSL layer now also emits bounded source diagnostics: `MailboxRuntimeError` carries optional details, `mailbox_language_source.py` annotates parse/check failures with `source_phase` plus line/column metadata, and `mailbox_language_stdio.py` forwards those fields in structured JSON responses so editor or pipe consumers can distinguish parse vs checker failures without scraping the error string.
 - The current mailbox-language product decision is now explicit: JSON IR plus protocol/runtime schema artifacts are the primary backend surface, while the textual DSL stays as an optional frontend that lowers into that same contract. Simple mailbox communication should not require DSL orchestration.
 - The next bounded oncall observability step is explicit task-progress tracking: replies should carry machine-readable `task_status`, and oncall registry inspection should prefer those explicit mailbox-native state transitions over heuristics based on thread silence.
+- Completion ping-pong mitigation is now also implemented for mailbox-first dev roles: `oncall_supervisor.py` can absorb a terminal completion/deferred/cancelled notice without launching a child worker when the current role is already terminal on that thread, and the `subagent_lab` on-call prompts now explicitly tell roles to exit successfully without replying when they receive a pure terminal notice that requires no new work.
 
 ## Milestones
 
@@ -89,6 +90,7 @@
 - Which backend capabilities are now mature enough to move from `Python primary` to `Rust primary` under the promotion criteria?
 - Should direct mailbox access eventually accept admin-account Basic auth on normal mailbox routes, or remain static-admin-token-only?
 - Which next A2A workloads actually require changes here, and which should instead be solved in the benchmark/task layer without adding more mailbox features?
+- Whether the current terminal-notice mitigation should remain prompt-plus-supervisor scoped, or grow into a more explicit server-visible thread-close mechanism now that the first ping-pong failure has both been reproduced and suppressed in local smoke.
 
 ## Language Strategy
 

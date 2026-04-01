@@ -318,6 +318,86 @@ class OncallSupervisorTests(unittest.TestCase):
             self.assertEqual(thread_registry["task_status"], "waiting_on_peer")
             self.assertEqual(thread_registry["task_resolution_summary"], "shared snapshot contract")
 
+    def test_run_oncall_supervisor_absorbs_terminal_notice_without_executing_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_dir = Path(temp_dir)
+            registry = OncallRegistry.create(runtime_dir=runtime_dir, role="operator")
+            registry.record_thread_state(
+                {
+                    "consumer_id": "operator-oncall-1",
+                    "mailbox_address": "operator@example.test",
+                    "thread_id": "thread-119",
+                    "task_status": "completed",
+                    "task_terminal": True,
+                    "completed_at": "2026-03-28T00:00:00Z",
+                },
+                status="acked",
+            )
+            client = FakeMailboxClient(
+                [
+                    {
+                        "delivery_id": 119,
+                        "message_id": "msg-119",
+                        "thread_id": "thread-119",
+                        "claim_token": "claim-119",
+                        "from": "peer@example.test",
+                        "to": "operator@example.test",
+                        "created_at": "2026-03-28T00:05:00Z",
+                        "payload": {
+                            "ok": True,
+                            "task_status": "completed",
+                            "notes": ["No further work is needed."],
+                        },
+                    }
+                ],
+                threads_by_id={
+                    "thread-119": _build_thread_payload(
+                        thread_id="thread-119",
+                        messages=[
+                            _message(
+                                message_id="msg-119",
+                                thread_id="thread-119",
+                                from_address="peer@example.test",
+                                to_addresses=["operator@example.test"],
+                                payload={
+                                    "ok": True,
+                                    "task_status": "completed",
+                                },
+                                created_at="2026-03-28T00:05:00Z",
+                            )
+                        ],
+                    )
+                },
+            )
+            seen_delivery_ids: list[int] = []
+
+            result = run_oncall_supervisor(
+                client,
+                _build_supervisor_config(runtime_dir),
+                registry,
+                lambda context: _record_successful_execution(seen_delivery_ids, context),
+            )
+
+            thread_registry = json.loads(
+                registry.thread_registry_path(
+                    mailbox_address="operator@example.test",
+                    thread_id="thread-119",
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(seen_delivery_ids, [])
+            self.assertEqual(result["acked"], 1)
+            self.assertEqual(result["task_status"], "completed")
+            self.assertTrue(result["task_terminal"])
+            self.assertEqual(result["task_status_message_id"], "msg-119")
+            self.assertEqual(result["task_status_source"], "absorbed_terminal_notice")
+            self.assertEqual(thread_registry["task_status"], "completed")
+            self.assertTrue(thread_registry["task_terminal"])
+            self.assertEqual(thread_registry["task_status_message_id"], "msg-119")
+            self.assertEqual(thread_registry["task_status_source"], "absorbed_terminal_notice")
+            self.assertIn("absorbed terminal completed notice", thread_registry["task_resolution_summary"])
+            self.assertEqual(len(client.ack_calls), 1)
+            self.assertEqual(client.nack_calls, [])
+
     def test_run_oncall_supervisor_records_failure_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime_dir = Path(temp_dir)

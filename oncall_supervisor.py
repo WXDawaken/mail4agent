@@ -27,6 +27,7 @@ class ClaimedDeliveryExecutionContext:
 ClaimedDeliveryExecutor = Callable[[ClaimedDeliveryExecutionContext], ClaimedDeliveryExecutionResult]
 WorkerReuseProbe = Callable[[str], bool]
 WorkspaceResolver = Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]]
+_TERMINAL_TASK_STATUSES = {"completed", "deferred", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -99,13 +100,23 @@ def run_oncall_supervisor(
             },
             status="running",
         )
-        execution_result = execute_claimed_delivery(
-            ClaimedDeliveryExecutionContext(
-                delivery=delivery,
-                thread_assignment=dict(last_thread_assignment),
-                existing_thread_state=existing_thread_state,
-            )
+        absorbed_notice_metadata = _absorbed_terminal_notice_metadata(
+            delivery=delivery,
+            existing_thread_state=existing_thread_state,
         )
+        if absorbed_notice_metadata is not None:
+            execution_result = ClaimedDeliveryExecutionResult(
+                exit_code=0,
+                metadata=absorbed_notice_metadata,
+            )
+        else:
+            execution_result = execute_claimed_delivery(
+                ClaimedDeliveryExecutionContext(
+                    delivery=delivery,
+                    thread_assignment=dict(last_thread_assignment),
+                    existing_thread_state=existing_thread_state,
+                )
+            )
         task_tracking_metadata = _load_task_tracking_metadata(
             client=client,
             delivery=delivery,
@@ -379,6 +390,41 @@ def _recovery_reason(
     return "previous_binding_not_reusable"
 
 
+def _absorbed_terminal_notice_metadata(
+    *,
+    delivery: dict[str, Any],
+    existing_thread_state: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(existing_thread_state, dict):
+        return None
+    existing_status = _normalize_task_status(_state_str(existing_thread_state, "task_status"))
+    existing_terminal = _state_bool(existing_thread_state, "task_terminal")
+    if existing_terminal is None:
+        existing_terminal = existing_status in _TERMINAL_TASK_STATUSES
+    if existing_status not in _TERMINAL_TASK_STATUSES or existing_terminal is not True:
+        return None
+    payload = delivery.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    incoming_status = _derive_task_status(payload)
+    if incoming_status not in _TERMINAL_TASK_STATUSES:
+        return None
+    delivery_message_id = _optional_str(delivery.get("message_id"))
+    delivery_created_at = _optional_str(delivery.get("created_at")) or _utc_now()
+    sender = _optional_str(delivery.get("from"))
+    summary = f"absorbed terminal {incoming_status} notice"
+    if sender is not None:
+        summary = f"{summary} from {sender}"
+    return {
+        "task_status": existing_status,
+        "task_terminal": True,
+        "task_status_message_id": delivery_message_id,
+        "task_status_updated_at": delivery_created_at,
+        "task_status_source": "absorbed_terminal_notice",
+        "task_resolution_summary": summary,
+    }
+
+
 def _is_stale_running_binding(existing_thread_state: dict[str, Any] | None) -> bool:
     if not existing_thread_state:
         return False
@@ -426,6 +472,15 @@ def _state_str(state: dict[str, Any] | None, key: str) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
         return stripped or None
+    return None
+
+
+def _state_bool(state: dict[str, Any] | None, key: str) -> bool | None:
+    if not isinstance(state, dict):
+        return None
+    value = state.get(key)
+    if isinstance(value, bool):
+        return value
     return None
 
 
@@ -544,7 +599,7 @@ def _load_task_tracking_metadata(
     waiting_on_address = _payload_str(payload, "waiting_on_address") or _payload_str(payload, "waiting_on")
     task_terminal = _payload_bool(payload, "task_terminal")
     if task_terminal is None:
-        task_terminal = task_status in {"completed", "deferred", "cancelled"}
+        task_terminal = task_status in _TERMINAL_TASK_STATUSES
     task_summary = (
         _payload_str(payload, "resolution_summary")
         or _payload_str(payload, "reason")
@@ -628,9 +683,7 @@ def _normalize_task_status(value: str | None) -> str | None:
         "waiting_on_peer",
         "waiting_on_requester",
         "blocked",
-        "completed",
-        "deferred",
-        "cancelled",
+        *_TERMINAL_TASK_STATUSES,
     }:
         return normalized
     return None
