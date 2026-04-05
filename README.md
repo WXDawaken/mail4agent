@@ -279,6 +279,16 @@ python .\client.py handoff --message-id <MESSAGE_ID> --to-address integrator@con
 
 The handoff message carries a `kind = mailbox_handoff` payload with source message refs and a source payload snapshot. This is useful when the target mailbox should continue the same coordination thread but cannot directly read the original mailbox's full thread history.
 
+## Thread Model
+
+- One mailbox message targets one `to_address`.
+- A `thread_id` is a shared causal chain, not a group-chat membership list.
+- A thread can involve more than two mailboxes over time, but only through point-to-point hops such as `reply`, `send` on the same `thread_id`, or `handoff`.
+- For parallel or sidecar work, prefer separate child/sibling threads plus a bounded summary back into the main thread instead of widening one thread into a many-party conversation.
+- For task ownership and waiting state, prefer explicit `task_status` and oncall registry metadata over implicit "everyone on the thread can see this, so someone will act" behavior.
+
+See [docs/mailbox-thread-design-guidelines-20260405.md](E:\agent_misc\mail4agent\docs\mailbox-thread-design-guidelines-20260405.md) for the short design memo.
+
 Run an operator mailbox command directly with the admin token:
 
 ```powershell
