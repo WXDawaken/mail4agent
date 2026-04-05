@@ -44,6 +44,7 @@
 - That same DSL layer now also emits bounded source diagnostics: `MailboxRuntimeError` carries optional details, `mailbox_language_source.py` annotates parse/check failures with `source_phase` plus line/column metadata, and `mailbox_language_stdio.py` forwards those fields in structured JSON responses so editor or pipe consumers can distinguish parse vs checker failures without scraping the error string.
 - The current mailbox-language product decision is now explicit: JSON IR plus protocol/runtime schema artifacts are the primary backend surface, while the textual DSL stays as an optional frontend that lowers into that same contract. Simple mailbox communication should not require DSL orchestration.
 - The current thread-model decision is now also explicit: keep one message per target mailbox and treat `thread_id` as a point-to-point causal chain that can span multiple mailboxes over time, rather than turning mailbox threads into first-class group-chat rooms.
+- If a future workload truly needs synchronized many-party coordination, the preferred direction is now a separate `group_round` or barrier layer on top of one thread, with explicit participant ack state and round locking, instead of changing ordinary thread semantics into free-form group chat.
 - The next bounded oncall observability step is explicit task-progress tracking: replies should carry machine-readable `task_status`, and oncall registry inspection should prefer those explicit mailbox-native state transitions over heuristics based on thread silence.
 - Completion ping-pong mitigation is now also implemented for mailbox-first dev roles: `oncall_supervisor.py` can absorb a terminal completion/deferred/cancelled notice without launching a child worker when the current role is already terminal on that thread, and the `subagent_lab` on-call prompts now explicitly tell roles to exit successfully without replying when they receive a pure terminal notice that requires no new work.
 
@@ -84,6 +85,7 @@
 - Keep the mailbox server DSL-agnostic; implement `mailbox_language_spec` via typed IR/runtime changes first, and add the textual language as a separate interpreter with native stdio support.
 - Keep JSON IR as the mailbox-language mainline backend contract; treat the current DSL as optional sugar and only expand it when it provides clear ergonomic value over direct JSON artifacts.
 - Keep mailbox threads as causal chains rather than group-chat rooms: one message should target one mailbox, while wider multi-role coordination should compose through handoff, child threads, and explicit task-state tracking instead of broadcast membership.
+- If group-chat-like behavior is ever added, prefer an explicit round/barrier model with required acknowledgements, optional replies, and timeout-based closure rather than open-ended broadcast conversation.
 
 ## Open Questions
 
