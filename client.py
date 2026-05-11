@@ -18,11 +18,17 @@ Compatibility mode:
     Get-Content .\\session.token | python client.py --base-url http://127.0.0.1:8787 thread --message-id <MESSAGE_ID>
 
 Auth input precedence for non-login commands:
-    1. `--token`
-    2. `--token-file`
-    3. `MAILBOX_SESSION_TOKEN`
-    4. `MAILBOX_TOKEN`
-    5. piped stdin (JSON bundle or plain token)
+    1. `--admin-token`
+    2. `--token`
+    3. `--token-file`
+    4. `MAILBOX_SESSION_TOKEN`
+    5. `MAILBOX_TOKEN`
+    6. `MAILBOX_ADMIN_TOKEN`
+    7. piped stdin (JSON bundle or plain token)
+
+For the current admin-only typed/runtime commands, implicit environment fallback prefers
+`MAILBOX_ADMIN_TOKEN` over `MAILBOX_SESSION_TOKEN`/`MAILBOX_TOKEN` unless an explicit
+token flag was provided on the command line.
 """
 
 import argparse
@@ -37,6 +43,20 @@ from pathlib import Path
 from typing import Any, cast
 
 from codex_mailbox_client import DEFAULT_MAILBOX_BASE_URL, MailboxClientConfig, MailboxHTTPClient, MailboxHTTPError
+from mailbox_worker import ConsumeConfig, run_consume_loop, run_subprocess_handler
+
+
+_ADMIN_BOOTSTRAP_COMMANDS = frozenset(
+    {
+        "register-protocol",
+        "list-protocols",
+        "set-mailbox-protocols",
+        "get-mailbox-protocols",
+        "typed-send",
+        "typed-spawn",
+        "typed-handoff",
+    }
+)
 
 
 def main() -> None:
@@ -76,6 +96,7 @@ def main() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Mailbox stdio CLI")
     parser.add_argument("--base-url", dest="global_base_url", help="mailbox server base URL")
+    parser.add_argument("--admin-token", dest="global_admin_token", help="admin bearer token for direct mailbox access")
     parser.add_argument("--token", dest="global_token", help="auth token (session token for normal commands)")
     parser.add_argument("--token-file", dest="global_token_file", help="read auth token or login bundle from file")
     parser.add_argument("--timeout-seconds", dest="global_timeout_seconds", type=float, default=None, help="HTTP timeout")
@@ -91,6 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--base-url", help="mailbox server base URL")
+    common.add_argument("--admin-token", help="admin bearer token for direct mailbox access")
     common.add_argument("--token", help="auth token (session token for normal commands)")
     common.add_argument("--token-file", help="read auth token or login bundle from file")
     common.add_argument("--timeout-seconds", type=float, default=None, help="HTTP timeout")
@@ -124,6 +146,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("healthz", parents=[common], help="check server health")
     subparsers.add_parser("whoami", parents=[common], help="show caller identity")
+    subparsers.add_parser("logout", parents=[common], help="invalidate the current agent session token")
 
     resolve_parser = subparsers.add_parser("resolve", parents=[common], help="resolve one address")
     resolve_parser.add_argument("--address", required=True)
@@ -136,6 +159,71 @@ def _build_parser() -> argparse.ArgumentParser:
     thread_parser.add_argument("--thread-id")
     thread_parser.add_argument("--message-id")
     thread_parser.add_argument("--allow-missing", action="store_true")
+
+    retry_queue_parser = subparsers.add_parser(
+        "retry-queue",
+        parents=[common],
+        help="list retry-pending deliveries visible to the caller",
+    )
+    retry_queue_parser.add_argument("--to-address")
+    retry_queue_parser.add_argument("--project-id")
+    retry_queue_parser.add_argument("--limit", type=int, default=50)
+
+    inbox_parser = subparsers.add_parser(
+        "inbox",
+        parents=[common],
+        help="list recent visible messages for one mailbox",
+    )
+    inbox_parser.add_argument("--to-address")
+    inbox_parser.add_argument("--limit", type=int, default=20)
+    inbox_parser.add_argument("--from-address")
+    inbox_parser.add_argument("--message-type")
+    inbox_parser.add_argument("--thread-id")
+    inbox_parser.add_argument("--since")
+    inbox_parser.add_argument("--unread-only", action="store_true")
+
+    thread_summaries_parser = subparsers.add_parser(
+        "thread-summaries",
+        parents=[common],
+        help="list compact thread summaries for one mailbox",
+    )
+    thread_summaries_parser.add_argument("--to-address")
+    thread_summaries_parser.add_argument("--limit", type=int, default=20)
+
+    register_protocol_parser = subparsers.add_parser(
+        "register-protocol",
+        parents=[common],
+        help="register one protocol schema artifact for typed runtime execution",
+    )
+    register_protocol_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    register_protocol_parser.add_argument("--schema-json", help="protocol schema JSON object")
+    register_protocol_parser.add_argument("--schema-file", help="read protocol schema JSON object from file")
+
+    subparsers.add_parser(
+        "list-protocols",
+        parents=[common],
+        help="list registered protocol schema artifacts",
+    )
+
+    set_mailbox_protocols_parser = subparsers.add_parser(
+        "set-mailbox-protocols",
+        parents=[common],
+        help="configure mailbox accepts/default protocol bindings",
+    )
+    set_mailbox_protocols_parser.add_argument("--address", required=True)
+    set_mailbox_protocols_parser.add_argument(
+        "--accepts",
+        required=True,
+        help="comma-separated protocol refs like PlainText/v1,Orders/v2",
+    )
+    set_mailbox_protocols_parser.add_argument("--default-protocol")
+
+    get_mailbox_protocols_parser = subparsers.add_parser(
+        "get-mailbox-protocols",
+        parents=[common],
+        help="inspect mailbox accepts/default protocol bindings",
+    )
+    get_mailbox_protocols_parser.add_argument("--address", required=True)
 
     send_parser = subparsers.add_parser("send", parents=[common], help="send one message")
     send_parser.add_argument("--to-address", required=True)
@@ -162,6 +250,94 @@ def _build_parser() -> argparse.ArgumentParser:
         help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
     )
 
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        parents=[common],
+        help="forward one visible message to another mailbox as a mailbox-native handoff",
+    )
+    handoff_parser.add_argument("--message-id", required=True, help="visible source message id")
+    handoff_parser.add_argument("--to-address", required=True)
+    handoff_parser.add_argument("--from-address")
+    handoff_parser.add_argument("--subject")
+    handoff_parser.add_argument("--message-type", default="handoff")
+    handoff_parser.add_argument("--summary")
+    handoff_parser.add_argument("--summary-file")
+    handoff_parser.add_argument("--instructions")
+    handoff_parser.add_argument("--instructions-file")
+    handoff_parser.add_argument("--correlation-id")
+    handoff_parser.add_argument("--workflow-id")
+    handoff_parser.add_argument("--idempotency-key")
+    handoff_parser.add_argument("--headers-json", help="headers JSON object")
+
+    typed_send_parser = subparsers.add_parser(
+        "typed-send",
+        parents=[common],
+        help="execute one typed mailbox-language send envelope without hand-writing envelope JSON",
+    )
+    typed_send_parser.add_argument("--to-address", required=True)
+    typed_send_parser.add_argument("--from-address")
+    typed_send_parser.add_argument("--subject")
+    typed_send_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    typed_send_parser.add_argument("--message", required=True, help="message name within the protocol")
+    typed_send_parser.add_argument("--thread-id", help="existing thread id; omit to create a new typed thread")
+    typed_send_parser.add_argument("--reply-to-address")
+    typed_send_parser.add_argument("--correlation-id")
+    typed_send_parser.add_argument("--workflow-id")
+    typed_send_parser.add_argument("--idempotency-key")
+    typed_send_parser.add_argument("--deliver-after-seconds", type=int, default=0)
+    typed_send_parser.add_argument("--expires-in-seconds", type=int)
+    typed_send_parser.add_argument("--max-attempts", type=int, default=8)
+    typed_send_parser.add_argument("--payload-json", help="typed payload JSON object")
+    typed_send_parser.add_argument("--payload-file", help="read typed payload JSON object from file")
+    typed_send_parser.add_argument("--headers-json", help="headers JSON object")
+    typed_send_parser.add_argument("--wire-message-type", help="optional transport message_type override")
+    typed_send_parser.add_argument(
+        "--stdin-payload-mode",
+        choices=("auto", "json", "text"),
+        default="auto",
+        help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
+    )
+
+    typed_spawn_parser = subparsers.add_parser(
+        "typed-spawn",
+        parents=[common],
+        help="execute one typed mailbox-language spawn envelope without hand-writing envelope JSON",
+    )
+    typed_spawn_parser.add_argument("--to-address", required=True)
+    typed_spawn_parser.add_argument("--from-address")
+    typed_spawn_parser.add_argument("--subject")
+    typed_spawn_parser.add_argument("--from-thread-id", required=True)
+    typed_spawn_parser.add_argument("--protocol", required=True, help="protocol ref like Orders/v2")
+    typed_spawn_parser.add_argument("--message", required=True, help="message name within the protocol")
+    typed_spawn_parser.add_argument("--reply-to-address")
+    typed_spawn_parser.add_argument("--correlation-id")
+    typed_spawn_parser.add_argument("--workflow-id")
+    typed_spawn_parser.add_argument("--idempotency-key")
+    typed_spawn_parser.add_argument("--deliver-after-seconds", type=int, default=0)
+    typed_spawn_parser.add_argument("--expires-in-seconds", type=int)
+    typed_spawn_parser.add_argument("--max-attempts", type=int, default=8)
+    typed_spawn_parser.add_argument("--payload-json", help="typed payload JSON object")
+    typed_spawn_parser.add_argument("--payload-file", help="read typed payload JSON object from file")
+    typed_spawn_parser.add_argument("--headers-json", help="headers JSON object")
+    typed_spawn_parser.add_argument("--wire-message-type", help="optional transport message_type override")
+    typed_spawn_parser.add_argument(
+        "--stdin-payload-mode",
+        choices=("auto", "json", "text"),
+        default="auto",
+        help="when payload is read from stdin: auto=json object else text wrapper; json=must be JSON object; text=wrap raw stdin as {\"text\": ...}",
+    )
+
+    typed_handoff_parser = subparsers.add_parser(
+        "typed-handoff",
+        parents=[common],
+        help="record one mailbox-language thread handoff without hand-writing event JSON",
+    )
+    typed_handoff_parser.add_argument("--from-thread-id", required=True)
+    typed_handoff_parser.add_argument("--to-thread-id", required=True)
+    typed_handoff_parser.add_argument("--actor")
+    typed_handoff_parser.add_argument("--metadata-json", help="handoff metadata JSON object")
+    typed_handoff_parser.add_argument("--metadata-file", help="read handoff metadata JSON object from file")
+
     reply_parser = subparsers.add_parser("reply", parents=[common], help="send a reply for one delivery")
     reply_parser.add_argument("--delivery-json", help="delivery JSON object or claim result JSON")
     reply_parser.add_argument("--delivery-file", help="read delivery JSON object or claim result JSON from file")
@@ -186,6 +362,12 @@ def _build_parser() -> argparse.ArgumentParser:
     claim_parser.add_argument("--to-addresses", help="comma-separated claim addresses")
     claim_parser.add_argument("--consumer-id", help="consumer id; defaults to hostname-pid")
     claim_parser.add_argument("--lease-seconds", type=int, default=60)
+    claim_parser.add_argument(
+        "--serialization-scope",
+        choices=("delivery", "mailbox_thread"),
+        default="mailbox_thread",
+        help="delivery: claim any queued delivery; mailbox_thread: serialize claims within one mailbox thread",
+    )
 
     ack_parser = subparsers.add_parser("ack", parents=[common], help="ack one delivery")
     ack_parser.add_argument("--delivery-id", required=True, type=int)
@@ -204,11 +386,26 @@ def _build_parser() -> argparse.ArgumentParser:
     heartbeat_parser.add_argument("--claim-token", required=True)
     heartbeat_parser.add_argument("--lease-seconds", type=int, default=60)
 
+    mark_thread_read_parser = subparsers.add_parser(
+        "mark-thread-read",
+        parents=[common],
+        help="mark one mailbox thread as read",
+    )
+    mark_thread_read_parser.add_argument("--thread-id", required=True)
+    mark_thread_read_parser.add_argument("--to-address")
+    mark_thread_read_parser.add_argument("--actor")
+
     consume_parser = subparsers.add_parser("consume", parents=[common], help="continuous claim -> child stdin -> ack/nack worker")
     consume_parser.add_argument("--to-address")
     consume_parser.add_argument("--to-addresses", help="comma-separated claim addresses")
     consume_parser.add_argument("--consumer-id", help="consumer id; defaults to hostname-pid")
     consume_parser.add_argument("--lease-seconds", type=int, default=60)
+    consume_parser.add_argument(
+        "--serialization-scope",
+        choices=("delivery", "mailbox_thread"),
+        default="mailbox_thread",
+        help="delivery: claim any queued delivery; mailbox_thread: serialize claims within one mailbox thread",
+    )
     consume_parser.add_argument("--heartbeat-interval-seconds", type=float, default=None)
     consume_parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
     consume_parser.add_argument("--retry-after-seconds", type=int, default=30)
@@ -275,11 +472,38 @@ def _build_authenticated_client(args: argparse.Namespace) -> MailboxHTTPClient:
     timeout_option = _option_value(args, "timeout_seconds")
     timeout_seconds = timeout_option if timeout_option is not None else _resolve_timeout_seconds()
     token = auth_input["token"]
+    client_config = _load_client_config_defaults()
+    configured_role = _optional_env_str("MAILBOX_ROLE") or _optional_config_str(client_config, "role")
+    file_config_role = _optional_config_str(client_config, "role")
+    configured_roles = tuple(
+        _merge_unique_strings(
+            _split_csv(os.environ.get("MAILBOX_ROLES")),
+            [configured_role] if configured_role else [],
+            _optional_config_str_list(client_config, "roles"),
+            [file_config_role] if file_config_role else [],
+        )
+    )
 
     client = MailboxHTTPClient(
         MailboxClientConfig(
             base_url=base_url,
             token=token,
+            from_address=_optional_env_str("MAILBOX_FROM_ADDRESS") or _optional_config_str(client_config, "from_address"),
+            inbox_address=_optional_env_str("MAILBOX_INBOX_ADDRESS") or _optional_config_str(
+                client_config, "inbox_address"
+            ),
+            project_id=_optional_env_str("MAILBOX_PROJECT_ID") or _optional_config_str(client_config, "project_id"),
+            role=configured_role,
+            roles=configured_roles,
+            session=_optional_env_str("MAILBOX_SESSION") or _optional_config_str(client_config, "session"),
+            agent_name=_optional_env_str("MAILBOX_AGENT_NAME") or _optional_config_str(client_config, "agent_name"),
+            local_part=_optional_env_str("MAILBOX_LOCAL_PART") or _optional_config_str(client_config, "local_part"),
+            mailbox_type=_optional_env_str("MAILBOX_MAILBOX_TYPE") or _optional_config_str(
+                client_config, "mailbox_type"
+            ),
+            consumer_id=_optional_env_str("MAILBOX_CONSUMER_ID") or _optional_config_str(
+                client_config, "consumer_id"
+            ),
             timeout_seconds=timeout_seconds,
         )
     )
@@ -295,6 +519,8 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
         return client.healthz()
     if args.command == "whoami":
         return client.whoami()
+    if args.command == "logout":
+        return client.logout()
     if args.command == "resolve":
         return {"ok": True, "mailbox": client.resolve(args.address)}
     if args.command == "message":
@@ -307,6 +533,52 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             allow_missing=bool(args.allow_missing),
         )
         return {"ok": thread is not None, "thread": thread}
+    if args.command == "inbox":
+        return client.get_inbox(
+            to_address=args.to_address,
+            limit=args.limit,
+            from_address=args.from_address,
+            message_type=args.message_type,
+            thread_id=args.thread_id,
+            since=args.since,
+            unread_only=bool(args.unread_only),
+        )
+    if args.command == "thread-summaries":
+        return client.get_thread_summaries(
+            to_address=args.to_address,
+            limit=args.limit,
+        )
+    if args.command == "register-protocol":
+        return {
+            "ok": True,
+            "protocol": client.register_protocol(
+                protocol=args.protocol,
+                schema=_load_optional_json_object(
+                    json_text=args.schema_json,
+                    file_path=args.schema_file,
+                    label="schema",
+                ),
+            ),
+        }
+    if args.command == "list-protocols":
+        return {"ok": True, "protocols": client.list_protocols()}
+    if args.command == "set-mailbox-protocols":
+        return {
+            "ok": True,
+            "bindings": client.set_mailbox_protocols(
+                address=args.address,
+                accepts=_split_csv(args.accepts),
+                default_protocol=args.default_protocol,
+            ),
+        }
+    if args.command == "get-mailbox-protocols":
+        return {"ok": True, "bindings": client.get_mailbox_protocols(address=args.address)}
+    if args.command == "retry-queue":
+        return client.retry_queue(
+            to_address=args.to_address,
+            project_id=args.project_id,
+            limit=args.limit,
+        )
     if args.command == "send":
         auth_source = getattr(args, "_auth_source", None)
         payload = _load_send_payload(args, allow_stdin=auth_source != "stdin")
@@ -329,6 +601,79 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             expires_in_seconds=args.expires_in_seconds,
             max_attempts=args.max_attempts,
         )
+    if args.command == "handoff":
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        return client.handoff_message(
+            source_message_id=args.message_id,
+            to_address=args.to_address,
+            summary=_load_optional_text(args.summary, args.summary_file, label="summary"),
+            instructions=_load_optional_text(args.instructions, args.instructions_file, label="instructions"),
+            from_address=args.from_address,
+            subject=args.subject,
+            message_type=args.message_type,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
+        )
+    if args.command == "typed-send":
+        auth_source = getattr(args, "_auth_source", None)
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        result = client.typed_send(
+            to_address=args.to_address,
+            from_address=args.from_address,
+            subject=args.subject,
+            thread_id=args.thread_id,
+            protocol=args.protocol,
+            message=args.message,
+            payload=_load_send_payload(args, allow_stdin=auth_source != "stdin"),
+            reply_to_address=args.reply_to_address,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
+            deliver_after_seconds=args.deliver_after_seconds,
+            expires_in_seconds=args.expires_in_seconds,
+            max_attempts=args.max_attempts,
+            wire_message_type=args.wire_message_type,
+        )
+        return {"ok": True, **result}
+    if args.command == "typed-spawn":
+        auth_source = getattr(args, "_auth_source", None)
+        headers = _load_optional_json_object(json_text=args.headers_json, file_path=None, label="headers")
+        result = client.typed_spawn(
+            to_address=args.to_address,
+            from_thread_id=args.from_thread_id,
+            from_address=args.from_address,
+            subject=args.subject,
+            protocol=args.protocol,
+            message=args.message,
+            payload=_load_send_payload(args, allow_stdin=auth_source != "stdin"),
+            reply_to_address=args.reply_to_address,
+            correlation_id=args.correlation_id,
+            workflow_id=args.workflow_id,
+            idempotency_key=args.idempotency_key,
+            headers=headers,
+            deliver_after_seconds=args.deliver_after_seconds,
+            expires_in_seconds=args.expires_in_seconds,
+            max_attempts=args.max_attempts,
+            wire_message_type=args.wire_message_type,
+        )
+        return {"ok": True, **result}
+    if args.command == "typed-handoff":
+        return {
+            "ok": True,
+            "handoff": client.typed_handoff(
+                from_thread_id=args.from_thread_id,
+                to_thread_id=args.to_thread_id,
+                actor=args.actor,
+                metadata=_load_optional_json_object(
+                    json_text=args.metadata_json,
+                    file_path=args.metadata_file,
+                    label="metadata",
+                ),
+            ),
+        }
     if args.command == "reply":
         auth_source = getattr(args, "_auth_source", None)
         delivery = _load_reply_delivery(args, allow_stdin=auth_source != "stdin")
@@ -368,6 +713,7 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             to_addresses=to_addresses if to_addresses else None,
             consumer_id=args.consumer_id or _default_consumer_id(),
             lease_seconds=args.lease_seconds,
+            serialization_scope=args.serialization_scope,
         )
         return {"ok": True, "delivery": delivery}
     if args.command == "ack":
@@ -393,6 +739,12 @@ def _run_client_command(client: MailboxHTTPClient, args: argparse.Namespace) -> 
             lease_seconds=args.lease_seconds,
         )
         return {"ok": ok}
+    if args.command == "mark-thread-read":
+        return client.mark_thread_read(
+            thread_id=args.thread_id,
+            to_address=args.to_address,
+            actor=args.actor or _default_consumer_id(),
+        )
     if args.command == "consume":
         return _run_consume(client, args)
     raise ValueError(f"unsupported command: {args.command}")
@@ -418,141 +770,32 @@ def _run_consume(client: MailboxHTTPClient, args: argparse.Namespace) -> dict[st
     if args.max_deliveries is not None and args.max_deliveries <= 0:
         raise ValueError("max-deliveries must be greater than zero")
 
-    processed = 0
-    acked = 0
-    nacked = 0
-    empty_polls = 0
-    last_delivery_id: int | None = None
-
-    while True:
-        to_addresses = _split_csv(args.to_addresses)
-        delivery = client.claim(
-            to_address=args.to_address,
-            to_addresses=to_addresses if to_addresses else None,
-            consumer_id=args.consumer_id or _default_consumer_id(),
-            lease_seconds=args.lease_seconds,
-        )
-        if delivery is None:
-            empty_polls += 1
-            if args.once:
-                break
-            if args.max_deliveries is not None and processed >= args.max_deliveries:
-                break
-            time.sleep(max(0.0, args.poll_interval_seconds))
-            continue
-
-        processed += 1
-        last_delivery_id = int(delivery["delivery_id"])
-        return_code = _run_consume_handler(client, delivery, handler_command, args, heartbeat_interval_seconds)
-        if return_code in ack_exit_codes:
-            ok = client.ack(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                actor=args.consumer_id or _default_consumer_id(),
-            )
-            if not ok:
-                raise RuntimeError(f"ack rejected for delivery {delivery['delivery_id']}")
-            acked += 1
-        else:
-            ok = client.nack(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                retry_after_seconds=args.retry_after_seconds,
-                last_error=f"handler exited with status {return_code}",
-                actor=args.consumer_id or _default_consumer_id(),
-            )
-            if not ok:
-                raise RuntimeError(f"nack rejected for delivery {delivery['delivery_id']}")
-            nacked += 1
-
-        if args.once:
-            break
-        if args.max_deliveries is not None and processed >= args.max_deliveries:
-            break
-
-    return {
-        "ok": True,
-        "processed": processed,
-        "acked": acked,
-        "nacked": nacked,
-        "empty_polls": empty_polls,
-        "last_delivery_id": last_delivery_id,
-        "handler_command": handler_command,
-        "heartbeat_interval_seconds": heartbeat_interval_seconds,
-    }
-
-
-def _run_consume_handler(
-    client: MailboxHTTPClient,
-    delivery: dict[str, Any],
-    handler_command: list[str],
-    args: argparse.Namespace,
-    heartbeat_interval_seconds: float,
-) -> int:
-    stop_event = threading.Event()
-    heartbeat_errors: list[BaseException] = []
-    heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop,
-        args=(
-            client,
-            delivery,
-            stop_event,
-            heartbeat_errors,
-            heartbeat_interval_seconds,
-            int(args.lease_seconds),
-        ),
-        daemon=True,
+    consumer_id = args.consumer_id or _default_consumer_id()
+    config = ConsumeConfig(
+        to_address=args.to_address,
+        to_addresses=tuple(_split_csv(args.to_addresses)),
+        consumer_id=consumer_id,
+        serialization_scope=str(args.serialization_scope),
+        lease_seconds=int(args.lease_seconds),
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        poll_interval_seconds=float(args.poll_interval_seconds),
+        retry_after_seconds=int(args.retry_after_seconds),
+        ack_exit_codes=frozenset(ack_exit_codes),
+        once=bool(args.once),
+        max_deliveries=args.max_deliveries,
     )
-    heartbeat_thread.start()
-    try:
-        completed = subprocess.run(
+
+    payload = run_consume_loop(
+        client,
+        config,
+        lambda delivery: run_subprocess_handler(
+            delivery,
             handler_command,
-            input=json.dumps(delivery, ensure_ascii=False),
-            text=True,
-            env=_build_handler_env(delivery),
             cwd=str(Path.cwd()),
-            check=False,
-        )
-        return int(completed.returncode)
-    finally:
-        stop_event.set()
-        heartbeat_thread.join(timeout=max(1.0, heartbeat_interval_seconds + 1.0))
-        if heartbeat_errors:
-            raise RuntimeError(f"heartbeat failed during consume: {heartbeat_errors[0]}")
-
-
-def _heartbeat_loop(
-    client: MailboxHTTPClient,
-    delivery: dict[str, Any],
-    stop_event: threading.Event,
-    heartbeat_errors: list[BaseException],
-    heartbeat_interval_seconds: float,
-    lease_seconds: int,
-) -> None:
-    while not stop_event.wait(heartbeat_interval_seconds):
-        try:
-            ok = client.heartbeat(
-                delivery_id=int(delivery["delivery_id"]),
-                claim_token=str(delivery["claim_token"]),
-                lease_seconds=lease_seconds,
-            )
-            if not ok:
-                heartbeat_errors.append(RuntimeError("heartbeat rejected by mailbox server"))
-                return
-        except Exception as exc:
-            heartbeat_errors.append(exc)
-            return
-
-
-def _build_handler_env(delivery: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
-    env["MAILBOX_DELIVERY_ID"] = str(delivery.get("delivery_id") or "")
-    env["MAILBOX_MESSAGE_ID"] = str(delivery.get("message_id") or "")
-    env["MAILBOX_THREAD_ID"] = str(delivery.get("thread_id") or "")
-    env["MAILBOX_CLAIM_TOKEN"] = str(delivery.get("claim_token") or "")
-    env["MAILBOX_FROM_ADDRESS"] = str(delivery.get("from") or "")
-    env["MAILBOX_TO_ADDRESS"] = str(delivery.get("to") or "")
-    return env
+        ),
+    )
+    payload["handler_command"] = handler_command
+    return payload
 
 
 def _resolve_base_url(explicit_base_url: str | None, *, auth_input: dict[str, Any] | None = None) -> str:
@@ -606,8 +849,16 @@ def _resolve_harness_token(args: argparse.Namespace) -> str:
 
 
 def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
+    admin_token_option = _option_value(args, "admin_token")
     token_option = _option_value(args, "token")
     token_file_option = _option_value(args, "token_file")
+    prefers_admin_env = _command_prefers_admin_bootstrap_auth(getattr(args, "command", None))
+    if admin_token_option and (token_option or token_file_option):
+        raise ValueError("provide either --admin-token or --token/--token-file, not both")
+    if admin_token_option:
+        result = {"token": str(admin_token_option).strip(), "source": "admin_arg"}
+        setattr(args, "_auth_source", "admin_arg")
+        return result
     if token_option:
         result = {"token": str(token_option).strip(), "source": "arg"}
         setattr(args, "_auth_source", "arg")
@@ -616,6 +867,11 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
         result = _parse_auth_text(_read_text(Path(str(token_file_option))))
         result["source"] = "file"
         setattr(args, "_auth_source", "file")
+        return result
+    env_admin_token = (os.environ.get("MAILBOX_ADMIN_TOKEN") or "").strip()
+    if prefers_admin_env and env_admin_token:
+        result = {"token": env_admin_token, "source": "env_admin"}
+        setattr(args, "_auth_source", "env_admin")
         return result
     env_session_token = (os.environ.get("MAILBOX_SESSION_TOKEN") or "").strip()
     if env_session_token:
@@ -627,13 +883,17 @@ def _load_auth_input(args: argparse.Namespace) -> dict[str, Any]:
         result = {"token": env_token, "source": "env"}
         setattr(args, "_auth_source", "env")
         return result
+    if env_admin_token:
+        result = {"token": env_admin_token, "source": "env_admin"}
+        setattr(args, "_auth_source", "env_admin")
+        return result
     stdin_auth = _read_stdin_auth()
     if stdin_auth is not None:
         stdin_auth["source"] = "stdin"
         setattr(args, "_auth_source", "stdin")
         return stdin_auth
     raise ValueError(
-        "missing auth token; use --token, --token-file, MAILBOX_SESSION_TOKEN, MAILBOX_TOKEN, or stdin"
+        "missing auth token; use --admin-token, --token, --token-file, MAILBOX_SESSION_TOKEN, MAILBOX_TOKEN, MAILBOX_ADMIN_TOKEN, or stdin"
     )
 
 
@@ -642,6 +902,10 @@ def _option_value(args: argparse.Namespace, name: str) -> Any:
     if local_value is not None and local_value != "" and local_value is not False:
         return local_value
     return getattr(args, f"global_{name}", None)
+
+
+def _command_prefers_admin_bootstrap_auth(command: str | None) -> bool:
+    return command in _ADMIN_BOOTSTRAP_COMMANDS
 
 
 def _pretty_enabled(args: argparse.Namespace) -> bool:
@@ -750,6 +1014,14 @@ def _load_optional_json_any(
     return _load_json_any_from_text(raw_text, label=label)
 
 
+def _load_optional_text(raw_text: str | None, file_path: str | None, *, label: str) -> str | None:
+    if raw_text is not None and file_path is not None:
+        raise ValueError(f"provide either --{label} or --{label}-file, not both")
+    if file_path is not None:
+        return _read_text(Path(file_path))
+    return raw_text
+
+
 def _load_json_any_from_text(raw_text: str, *, label: str) -> Any:
     try:
         payload = json.loads(raw_text)
@@ -839,6 +1111,21 @@ def _payload_from_stdin(raw_text: str, *, mode: str) -> dict[str, Any]:
     return payload
 
 
+def _merge_unique_strings(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, str):
+                continue
+            stripped = item.strip()
+            if not stripped or stripped in seen:
+                continue
+            seen.add(stripped)
+            result.append(stripped)
+    return result
+
+
 def _merge_roles(repeated_roles: list[str], csv_roles: str | None) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -873,6 +1160,55 @@ def _resolve_config_path() -> Path | None:
         return Path(config_path)
     default_path = Path.cwd() / "mailbox_client.json"
     return default_path if default_path.exists() else None
+
+
+def _load_client_config_defaults() -> dict[str, Any]:
+    config_path = _resolve_config_path()
+    if config_path is None or not config_path.exists():
+        return {}
+    try:
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in config file: {config_path}") from exc
+    if not isinstance(config_data, dict):
+        raise ValueError(f"config file must decode to a JSON object: {config_path}")
+    return config_data
+
+
+def _optional_env_str(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optional_config_str(config: dict[str, Any], key: str) -> str | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"config file field {key} must be a string")
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optional_config_str_list(config: dict[str, Any], key: str) -> list[str]:
+    value = config.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _split_csv(value)
+    if not isinstance(value, list):
+        raise ValueError(f"config file field {key} must be a string or list of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"config file field {key} must contain only strings")
+        stripped = item.strip()
+        if stripped:
+            result.append(stripped)
+    return result
 
 
 def _read_text(path: Path) -> str:
@@ -922,19 +1258,29 @@ def _format_text_payload(payload: dict[str, Any], args: argparse.Namespace) -> s
         return _format_healthz_text(payload)
     if command == "whoami":
         return _format_whoami_text(payload)
+    if command == "logout":
+        return _format_logout_text(payload)
     if command == "resolve":
         return _format_resolve_text(payload)
     if command == "message":
         return _format_message_wrapper_text(payload)
     if command == "thread":
         return _format_thread_text(payload)
+    if command == "inbox":
+        return _format_inbox_text(payload)
+    if command == "thread-summaries":
+        return _format_thread_summaries_text(payload)
+    if command == "retry-queue":
+        return _format_retry_queue_text(payload)
     if command == "send":
         return _format_send_text(payload)
+    if command == "handoff":
+        return _format_handoff_text(payload)
     if command == "reply":
         return _format_reply_text(payload)
     if command == "claim":
         return _format_claim_text(payload)
-    if command in {"ack", "nack", "heartbeat"}:
+    if command in {"ack", "nack", "heartbeat", "mark-thread-read"}:
         return _format_boolean_result_text(command, payload)
     return json.dumps(payload, ensure_ascii=False, indent=2 if _pretty_enabled(args) else None)
 
@@ -1051,11 +1397,85 @@ def _format_thread_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_logout_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_field(lines, "logged_out", payload.get("logged_out"))
+    _append_common_context(lines, payload)
+    session = payload.get("session")
+    if isinstance(session, dict):
+        lines.append("")
+        lines.append("session:")
+        lines.extend(_indent_lines(_format_session_lines(session), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_thread_summaries_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    threads = payload.get("threads")
+    if not isinstance(threads, list):
+        lines.append("")
+        lines.append("threads: none")
+        return "\n".join(lines)
+    if not threads:
+        lines.append("")
+        lines.append("threads: none")
+        return "\n".join(lines)
+    for index, thread in enumerate(threads, start=1):
+        if not isinstance(thread, dict):
+            continue
+        lines.append("")
+        lines.append(f"thread[{index}]:")
+        lines.extend(_indent_lines(_format_thread_summary_lines(thread), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_inbox_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        lines.append("")
+        lines.append("messages: none")
+        return "\n".join(lines)
+    for index, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            continue
+        lines.append("")
+        lines.append(f"message[{index}]:")
+        lines.extend(_indent_lines(_format_message_lines(message), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_retry_queue_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    _append_field(lines, "ok", payload.get("ok"))
+    _append_common_context(lines, payload)
+    deliveries = payload.get("deliveries")
+    if not isinstance(deliveries, list) or not deliveries:
+        lines.append("")
+        lines.append("deliveries: none")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append(f"deliveries: {len(deliveries)}")
+    for index, delivery in enumerate(deliveries, start=1):
+        if not isinstance(delivery, dict):
+            continue
+        lines.append("")
+        lines.append(f"delivery[{index}]:")
+        lines.extend(_indent_lines(_format_retry_delivery_lines(delivery), prefix="  "))
+    return "\n".join(lines)
+
+
 def _format_send_text(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     _append_field(lines, "ok", payload.get("ok"))
     _append_field(lines, "message_id", payload.get("message_id"))
     _append_field(lines, "delivery_id", payload.get("delivery_id"))
+    _append_field(lines, "thread_id", payload.get("thread_id"))
     _append_field(lines, "deduplicated", payload.get("deduplicated"))
     _append_common_context(lines, payload)
     return "\n".join(lines)
@@ -1070,6 +1490,22 @@ def _format_reply_text(payload: dict[str, Any]) -> str:
         lines.append("")
         lines.append("reply:")
         lines.extend(_indent_lines(_format_send_text(reply).splitlines(), prefix="  "))
+    return "\n".join(lines)
+
+
+def _format_handoff_text(payload: dict[str, Any]) -> str:
+    lines = _format_send_text(payload).splitlines()
+    _append_field(lines, "target_address", payload.get("target_address"))
+    source_message = payload.get("source_message")
+    if isinstance(source_message, dict):
+        if lines:
+            lines.append("")
+        lines.append("source_message:")
+        _append_field(lines, "  message_id", source_message.get("message_id"))
+        _append_field(lines, "  thread_id", source_message.get("thread_id"))
+        _append_field(lines, "  from", source_message.get("from"))
+        _append_field(lines, "  message_type", source_message.get("message_type"))
+        _append_field(lines, "  subject", source_message.get("subject"))
     return "\n".join(lines)
 
 
@@ -1124,6 +1560,7 @@ def _format_session_lines(session: dict[str, Any]) -> list[str]:
     _append_field(lines, "agent_name", session.get("agent_name"))
     _append_field(lines, "session_name", session.get("session_name"))
     _append_field(lines, "default_from_address", session.get("default_from_address"))
+    _append_field(lines, "default_inbox_address", session.get("default_inbox_address"))
     _append_list_block(lines, "default_claim_addresses", session.get("default_claim_addresses"))
     _append_list_block(lines, "send_as_addresses", session.get("send_as_addresses"))
     _append_list_block(lines, "claim_addresses", session.get("claim_addresses"))
@@ -1180,10 +1617,36 @@ def _format_delivery_lines(delivery: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_thread_summary_lines(summary: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    _append_field(lines, "thread_id", summary.get("thread_id"))
+    _append_field(lines, "latest_message_id", summary.get("latest_message_id"))
+    _append_field(lines, "latest_message_at", summary.get("latest_message_at"))
+    _append_field(lines, "latest_from_address", summary.get("latest_from_address"))
+    _append_field(lines, "message_count", summary.get("message_count"))
+    _append_field(lines, "reply_count", summary.get("reply_count"))
+    _append_field(lines, "unread", summary.get("unread"))
+    return lines
+
+
+def _format_retry_delivery_lines(delivery: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    _append_field(lines, "delivery_id", delivery.get("delivery_id"))
+    _append_field(lines, "message_id", delivery.get("message_id"))
+    _append_field(lines, "to", delivery.get("to"))
+    _append_field(lines, "status", delivery.get("status"))
+    _append_field(lines, "attempt_count", delivery.get("attempt_count"))
+    _append_field(lines, "max_attempts", delivery.get("max_attempts"))
+    _append_field(lines, "next_retry_at", delivery.get("next_retry_at"))
+    _append_field(lines, "last_error_summary", delivery.get("last_error_summary"))
+    return lines
+
+
 def _append_common_context(lines: list[str], payload: dict[str, Any]) -> None:
     _append_field(lines, "caller_harness_id", payload.get("caller_harness_id"))
     _append_field(lines, "auth_kind", payload.get("auth_kind"))
     _append_field(lines, "agent_session_id", payload.get("agent_session_id"))
+    _append_field(lines, "admin", payload.get("admin"))
 
 
 def _append_field(lines: list[str], label: str, value: Any) -> None:
