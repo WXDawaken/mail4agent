@@ -13,7 +13,7 @@ class OncallExecCodexTests(unittest.TestCase):
     def test_build_exposes_codex_execution_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            runtime_dir = root / ".tmp_dogfood"
+            runtime_dir = root / ".tmp_oncall"
             executor = CodexOncallExecutor.build(
                 root=root,
                 role="operator",
@@ -21,7 +21,7 @@ class OncallExecCodexTests(unittest.TestCase):
                 reasoning_effort="high",
                 bootstrap_summary={
                     "project_id": "mail4agent",
-                    "harness_id": "dogfood",
+                    "harness_id": "local",
                 },
             )
 
@@ -35,7 +35,7 @@ class OncallExecCodexTests(unittest.TestCase):
                 executor.execution_metadata["last_message_path"],
                 str(runtime_dir / "operator-oncall-last-message.txt"),
             )
-            self.assertIn("launch_dogfood_oncall_agent.ps1", " ".join(executor.command))
+            self.assertIn("launch_oncall_agent.ps1", " ".join(executor.command))
 
     def test_build_can_target_custom_workspace_and_codex_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -51,7 +51,7 @@ class OncallExecCodexTests(unittest.TestCase):
                 reasoning_effort="high",
                 bootstrap_summary={
                     "project_id": "mail4agent",
-                    "harness_id": "dogfood",
+                    "harness_id": "local",
                 },
                 workspace_dir=workspace_dir,
                 codex_home_dir=codex_home_dir,
@@ -68,7 +68,7 @@ class OncallExecCodexTests(unittest.TestCase):
     def test_execute_claimed_delivery_uses_subprocess_handler_with_oncall_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            runtime_dir = root / ".tmp_dogfood"
+            runtime_dir = root / ".tmp_oncall"
             executor = CodexOncallExecutor.build(
                 root=root,
                 role="operator",
@@ -76,7 +76,7 @@ class OncallExecCodexTests(unittest.TestCase):
                 reasoning_effort="xhigh",
                 bootstrap_summary={
                     "project_id": "mail4agent",
-                    "harness_id": "dogfood",
+                    "harness_id": "local",
                 },
             )
             delivery = {
@@ -113,5 +113,5 @@ class OncallExecCodexTests(unittest.TestCase):
             self.assertEqual(base_env["MAILBOX_ONCALL_MODE"], "1")
             self.assertEqual(base_env["MAILBOX_ONCALL_ROLE"], "operator")
             self.assertEqual(base_env["MAILBOX_ONCALL_RUNTIME_DIR"], str(runtime_dir))
-            self.assertEqual(base_env["MAILBOX_HARNESS_ID"], "dogfood")
+            self.assertEqual(base_env["MAILBOX_HARNESS_ID"], "local")
             self.assertEqual(base_env["MAILBOX_PROJECT_ID"], "mail4agent")

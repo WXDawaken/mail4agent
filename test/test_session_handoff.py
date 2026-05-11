@@ -22,14 +22,14 @@ class SessionHandoffTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="planner",
             consumer_id="python-handoff-planner",
-            session_name="dogfood-handoff-planner",
+            session_name="fixture-handoff-planner",
         )
         integrator_session = login_role_session(
             self.base_url,
             self.tokens["codex"],
             role="integrator",
             consumer_id="python-handoff-integrator",
-            session_name="dogfood-handoff-integrator",
+            session_name="fixture-handoff-integrator",
         )
 
         request_message = planner_session.send(

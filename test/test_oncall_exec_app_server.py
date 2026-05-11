@@ -183,7 +183,7 @@ class OncallExecAppServerTests(unittest.TestCase):
     def test_build_exposes_app_server_execution_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            runtime_dir = root / ".tmp_dogfood"
+            runtime_dir = root / ".tmp_oncall"
             with patch(
                 "oncall_exec_app_server._resolve_app_server_command_prefix",
                 return_value=("cmd.exe", "/c", "codex.cmd"),
@@ -195,7 +195,7 @@ class OncallExecAppServerTests(unittest.TestCase):
                     reasoning_effort="high",
                     bootstrap_summary={
                         "project_id": "mail4agent",
-                        "harness_id": "dogfood",
+                        "harness_id": "local",
                     },
                 )
 
@@ -211,7 +211,7 @@ class OncallExecAppServerTests(unittest.TestCase):
             self.assertEqual(executor.execution_metadata["workspace_root_dir"], str(root))
             self.assertEqual(
                 executor.execution_metadata["codex_home_dir"],
-                str((root / ".codex_home_dogfood").resolve()),
+                str((root / ".codex_home_oncall").resolve()),
             )
             self.assertEqual(
                 executor.execution_metadata["mailbox_client_path"],
@@ -244,7 +244,7 @@ class OncallExecAppServerTests(unittest.TestCase):
                     reasoning_effort="high",
                     bootstrap_summary={
                         "project_id": "mail4agent",
-                        "harness_id": "dogfood",
+                        "harness_id": "local",
                     },
                     workspace_dir=workspace_dir,
                     codex_home_dir=codex_home_dir,
@@ -258,7 +258,7 @@ class OncallExecAppServerTests(unittest.TestCase):
             self.assertEqual(executor.execution_metadata["codex_home_dir"], str(codex_home_dir.resolve()))
             self.assertEqual(executor.execution_metadata["worker_idle_timeout_seconds"], 120.0)
             self.assertEqual(executor.execution_metadata["worker_max_age_seconds"], None)
-            self.assertEqual(executor.prompt_path, (workspace_dir / "docs/dogfood-high-operator-oncall-prompt.txt").resolve())
+            self.assertEqual(executor.prompt_path, (workspace_dir / "docs/operator-oncall-prompt.txt").resolve())
             self.assertEqual(executor.command, ("codex", "app-server", "--listen", "stdio://"))
 
     def test_resolve_workspace_assignment_accepts_child_workspace_hint(self) -> None:
@@ -680,7 +680,7 @@ class OncallExecAppServerTests(unittest.TestCase):
                 reasoning_effort="high",
                 bootstrap_summary={
                     "project_id": "mail4agent",
-                    "harness_id": "dogfood",
+                    "harness_id": "local",
                 },
                 worker_idle_timeout_seconds=worker_idle_timeout_seconds,
                 worker_max_age_seconds=worker_max_age_seconds,
@@ -688,7 +688,7 @@ class OncallExecAppServerTests(unittest.TestCase):
 
     def _write_runtime_files(self, root: Path, runtime_dir: Path) -> None:
         (root / "docs").mkdir(parents=True, exist_ok=True)
-        (root / "docs" / "dogfood-high-operator-oncall-prompt.txt").write_text(
+        (root / "docs" / "operator-oncall-prompt.txt").write_text(
             "Follow the mailbox task and keep the repo update bounded.\n",
             encoding="utf-8",
         )
@@ -702,7 +702,7 @@ class OncallExecAppServerTests(unittest.TestCase):
                     "role": "operator",
                     "local_part": "operator",
                     "mailbox_type": "group",
-                    "agent_name": "dogfood-operator",
+                    "agent_name": "operator-agent",
                 },
                 ensure_ascii=False,
                 indent=2,

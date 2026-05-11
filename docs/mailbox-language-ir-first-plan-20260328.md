@@ -4,7 +4,7 @@ Date: `2026-03-28`
 
 ## Goal
 
-Implement the runtime core of [`mailbox_language_spec_v0_2.md`](E:\agent_misc\mail4agent\docs\mailbox_language_spec_v0_2.md) without coupling the mailbox server to the textual DSL.
+Implement the runtime core of [`mailbox_language_spec_v0_2.md`](mailbox_language_spec_v0_2.md) without coupling the mailbox server to the textual DSL.
 
 ## Direction
 
