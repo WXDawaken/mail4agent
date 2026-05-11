@@ -45,6 +45,8 @@
 - The current mailbox-language product decision is now explicit: JSON IR plus protocol/runtime schema artifacts are the primary backend surface, while the textual DSL stays as an optional frontend that lowers into that same contract. Simple mailbox communication should not require DSL orchestration.
 - The current thread-model decision is now also explicit: keep one message per target mailbox and treat `thread_id` as a point-to-point causal chain that can span multiple mailboxes over time, rather than turning mailbox threads into first-class group-chat rooms.
 - If a future workload truly needs synchronized many-party coordination, the preferred direction is now a separate `group_round` or barrier layer on top of one thread, with explicit participant ack state and round locking, instead of changing ordinary thread semantics into free-form group chat.
+- A Codex `multi_agent_v2` comparison memo now identifies the collaboration semantics worth borrowing without changing `mail4agent`'s durable mailbox-server-owned truth: queue-vs-wake delivery semantics, stable logical task handles, mailbox-revision waiting, and answer-boundary gating.
+- A cross-workspace role-aware oncall draft now exists: it keeps `oncall` as a supervision capability rather than a role, resolves delivery targets through role bindings, and recommends reusable worker binding by `(role, workspace_dir, thread_id)` for future manifest-driven oncall servers.
 - The next bounded oncall observability step is explicit task-progress tracking: replies should carry machine-readable `task_status`, and oncall registry inspection should prefer those explicit mailbox-native state transitions over heuristics based on thread silence.
 - Completion ping-pong mitigation is now also implemented for mailbox-first dev roles: `oncall_supervisor.py` can absorb a terminal completion/deferred/cancelled notice without launching a child worker when the current role is already terminal on that thread, and the `subagent_lab` on-call prompts now explicitly tell roles to exit successfully without replying when they receive a pure terminal notice that requires no new work.
 
@@ -95,6 +97,7 @@
 - Should direct mailbox access eventually accept admin-account Basic auth on normal mailbox routes, or remain static-admin-token-only?
 - Which next A2A workloads actually require changes here, and which should instead be solved in the benchmark/task layer without adding more mailbox features?
 - Whether the current terminal-notice mitigation should remain prompt-plus-supervisor scoped, or grow into a more explicit server-visible thread-close mechanism now that the first ping-pong failure has both been reproduced and suppressed in local smoke.
+- Whether the next oncall implementation slice should add a manifest-backed workspace-root role router, or keep Codex app/CLI as the temporary coordinator until another experiment proves that manual routing is too costly.
 
 ## Language Strategy
 
@@ -111,6 +114,8 @@
 - Cross-project handoff report: `E:\agent_misc\mail4agent\docs\dogfood-cross-project-handoff-report-20260326.md`
 - Mailbox/oncall separation note: `E:\agent_misc\mail4agent\docs\mailbox-oncall-separation-20260328.md`
 - Mailbox/oncall implementation plan: `E:\agent_misc\mail4agent\docs\mailbox-oncall-implementation-plan-20260328.md`
+- Codex multi-agent v2 comparison: `E:\agent_misc\mail4agent\docs\mailbox-codex-multi-agent-v2-comparison-20260418.md`
+- Cross-workspace role-aware oncall draft: `E:\agent_misc\mail4agent\docs\mailbox-cross-workspace-role-aware-oncall-draft-20260425.md`
 - Mailbox language IR-first plan: `E:\agent_misc\mail4agent\docs\mailbox-language-ir-first-plan-20260328.md`
 - Dogfood maintenance scenario: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-scenario-20260324.md`
 - Dogfood maintenance drill playbook: `E:\agent_misc\mail4agent\docs\dogfood-feedback-server-update-drill-20260324.md`

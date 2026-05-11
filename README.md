@@ -289,6 +289,12 @@ The handoff message carries a `kind = mailbox_handoff` payload with source messa
 
 See [docs/mailbox-thread-design-guidelines-20260405.md](E:\agent_misc\mail4agent\docs\mailbox-thread-design-guidelines-20260405.md) for the short design memo.
 
+## Coordination Design Notes
+
+- [docs/mailbox-codex-multi-agent-v2-comparison-20260418.md](E:\agent_misc\mail4agent\docs\mailbox-codex-multi-agent-v2-comparison-20260418.md) compares `mail4agent` with Codex multi-agent v2. The recommended borrowing order is queue-vs-wake delivery semantics, stable logical task handles, mailbox-revision waiting, and answer-boundary gating while keeping mailbox truth durable.
+- [docs/mailbox-cross-workspace-role-aware-oncall-draft-20260425.md](E:\agent_misc\mail4agent\docs\mailbox-cross-workspace-role-aware-oncall-draft-20260425.md) drafts the next role-aware oncall shape for cross-workspace work: `oncall` remains a supervision capability, role resolution stays in the oncall layer, and reusable worker binding should be keyed by `(role, workspace_dir, thread_id)`.
+- [docs/mailbox-group-round-draft-20260405.md](E:\agent_misc\mail4agent\docs\mailbox-group-round-draft-20260405.md) is the future-facing many-party synchronization sketch. Keep ordinary mailbox threads point-to-point unless a workload explicitly needs a locked group round.
+
 Run an operator mailbox command directly with the admin token:
 
 ```powershell
