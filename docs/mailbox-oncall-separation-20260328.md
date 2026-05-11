@@ -1,6 +1,6 @@
 ## Goal
 
-Clarify how `mailbox` and `oncall` should separate as the dogfood system grows from one-shot claimed-delivery runs into reusable thread-sticky supervision.
+Clarify how `mailbox` and `oncall` should separate as the system grows from one-shot claimed-delivery runs into reusable thread-sticky supervision.
 
 ## Short Answer
 

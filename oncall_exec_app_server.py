@@ -26,7 +26,7 @@ class AppServerRoleSpec:
 ROLE_SPECS: dict[str, AppServerRoleSpec] = {
     "operator": AppServerRoleSpec(
         config_file="operator.mailbox_client.json",
-        prompt_file="docs/dogfood-high-operator-oncall-prompt.txt",
+        prompt_file="docs/operator-oncall-prompt.txt",
     ),
     "plugin_dev": AppServerRoleSpec(
         config_file="plugin_dev.mailbox_client.json",
@@ -107,7 +107,7 @@ class AppServerOncallExecutor:
         resolved_codex_home_dir = (
             codex_home_dir.resolve()
             if codex_home_dir is not None
-            else (resolved_workspace_root_dir / ".codex_home_dogfood").resolve()
+            else (resolved_workspace_root_dir / ".codex_home_oncall").resolve()
         )
         prompt_path = (resolved_workspace_root_dir / role_spec.prompt_file).resolve()
         mailbox_client_path = (root / "client.py").resolve()
@@ -441,7 +441,7 @@ class AppServerOncallExecutor:
         env.pop("MAILBOX_FROM_ADDRESS", None)
         env.pop("MAILBOX_INBOX_ADDRESS", None)
 
-        sandbox_runtime_dir = (resolved_workspace.workspace_dir / ".tmp_dogfood_live" / f"{self.role}-oncall").resolve()
+        sandbox_runtime_dir = (resolved_workspace.workspace_dir / ".tmp_oncall_live" / f"{self.role}-oncall").resolve()
         sandbox_runtime_dir.mkdir(parents=True, exist_ok=True)
         resolved_workspace.codex_home_dir.mkdir(parents=True, exist_ok=True)
         sandbox_config_path = sandbox_runtime_dir / self.runtime_config_path.name

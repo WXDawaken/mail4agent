@@ -59,7 +59,7 @@ It is not a role by itself.
 Example:
 
 ```text
-plugin_dev is on call for E:\agent_misc\subagent_lab\anchor_agent
+plugin_dev is on call for <workspace>/anchor_agent
 ```
 
 ### Workspace Root
@@ -108,32 +108,32 @@ Example:
 {
   "workspace_root_dir": "E:/agent_misc/subagent_lab",
   "mailbox_client_path": "E:/agent_misc/mail4agent/client.py",
-  "runtime_dir": "E:/agent_misc/mail4agent/.tmp_dogfood_live",
+  "runtime_dir": ".tmp_oncall_live",
   "default_backend": "app-server",
   "roles": {
     "salvage_run_dev": {
-      "inbox_address": "salvage_run_dev@subagent_lab.dogfood",
+      "inbox_address": "salvage_run_dev@subagent_lab.local",
       "config_file": "salvage_run_dev.mailbox_client.json",
       "prompt_file": "docs/salvage-run-dev-oncall-prompt.txt",
       "default_workspace_dir": ".",
       "allowed_workspace_globs": ["."]
     },
     "game_engine_dev": {
-      "inbox_address": "game_engine_dev@subagent_lab.dogfood",
+      "inbox_address": "game_engine_dev@subagent_lab.local",
       "config_file": "game_engine_dev.mailbox_client.json",
       "prompt_file": "docs/game-engine-dev-oncall-prompt.txt",
       "default_workspace_dir": ".",
       "allowed_workspace_globs": ["."]
     },
     "plugin_dev": {
-      "inbox_address": "plugin_dev@anchor_agent.dogfood",
+      "inbox_address": "plugin_dev@anchor_agent.local",
       "config_file": "plugin_dev.mailbox_client.json",
       "prompt_file": "docs/anchor-agent-plugin-dev-oncall-prompt.txt",
       "default_workspace_dir": "anchor_agent",
       "allowed_workspace_globs": ["anchor_agent/**"]
     },
     "core_dev": {
-      "inbox_address": "core_dev@anchor_agent.dogfood",
+      "inbox_address": "core_dev@anchor_agent.local",
       "config_file": "core_dev.mailbox_client.json",
       "prompt_file": "docs/anchor-agent-core-dev-oncall-prompt.txt",
       "default_workspace_dir": "anchor_agent",
@@ -232,7 +232,7 @@ Recommended persisted fields:
 ```json
 {
   "role": "plugin_dev",
-  "mailbox_address": "plugin_dev@anchor_agent.dogfood",
+  "mailbox_address": "plugin_dev@anchor_agent.local",
   "thread_id": "thread_123",
   "workspace_dir": "E:/agent_misc/subagent_lab/anchor_agent",
   "workspace_root_dir": "E:/agent_misc/subagent_lab",
@@ -283,7 +283,7 @@ Expected behavior:
 Extend `mailbox_oncall_server.py` with a manifest mode:
 
 ```powershell
-python .\mailbox_oncall_server.py --role-manifest .tmp_dogfood_live\oncall_roles.json --backend app-server --watch
+python .\mailbox_oncall_server.py --role-manifest .tmp_oncall_live\oncall_roles.json --backend app-server --watch
 ```
 
 The first version can run one role supervisor per role in the same process. A later version can centralize the claim loop over the union of addresses if that reduces duplicated polling.

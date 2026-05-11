@@ -181,7 +181,7 @@ def run_oncall(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Role-aware mailbox oncall supervisor")
     parser.add_argument("--role", choices=sorted(ROLE_SPECS.keys()), default="operator")
-    parser.add_argument("--runtime-dir", default=".tmp_dogfood")
+    parser.add_argument("--runtime-dir", default=".tmp_oncall")
     parser.add_argument("--backend", choices=("codex-cli", "app-server"), default="codex-cli")
     parser.add_argument(
         "--inspect-registry",

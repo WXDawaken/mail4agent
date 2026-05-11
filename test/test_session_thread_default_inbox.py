@@ -34,7 +34,7 @@ class SessionThreadDefaultInboxTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-thread-default-http",
-            session_name="dogfood-defaults-http",
+            session_name="fixture-defaults-http",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -89,7 +89,7 @@ class SessionThreadDefaultInboxTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-thread-default-cli",
-            session_name="dogfood-defaults-cli",
+            session_name="fixture-defaults-cli",
         )
         session_token = auth_token_for_client(reviewer_session)
 

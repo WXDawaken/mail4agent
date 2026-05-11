@@ -11,7 +11,7 @@ Use `mail4agent` as a future benchmark repo for Python-to-Rust migration tasks t
 
 ## Working Assumptions
 
-- Treat `E:\agent_misc\mail4agent` as the canonical source repo and keep future benchmark runs on seeded copies, not in-place edits.
+- Treat the repo root as the canonical source repo and keep future benchmark runs on seeded copies, not in-place edits.
 - Use the current Python implementation as the protocol oracle during early migration rounds.
 - Prefer Windows-first validation because that is the environment already exercised here.
 - Keep early migration tasks dependency-light even on the Rust side when practical.

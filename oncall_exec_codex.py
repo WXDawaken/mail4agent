@@ -39,7 +39,7 @@ class CodexOncallExecutor:
     ) -> CodexOncallExecutor:
         resolved_workspace_dir = (workspace_dir or root).resolve()
         resolved_codex_home_dir = codex_home_dir.resolve() if codex_home_dir is not None else None
-        launcher_path = root / "launch_dogfood_oncall_agent.ps1"
+        launcher_path = root / "launch_oncall_agent.ps1"
         command_parts = [
             "powershell",
             "-ExecutionPolicy",

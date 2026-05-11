@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("operator", "plugin_dev", "core_dev", "salvage_run_dev", "game_engine_dev")]
     [string]$Role,
-    [string]$RuntimeDir = ".tmp_dogfood",
+    [string]$RuntimeDir = ".tmp_oncall",
     [string]$ReasoningEffort,
     [string]$WorkspaceDir = "",
     [string]$CodexHomeDir = ""
@@ -36,14 +36,8 @@ if ([string]::IsNullOrWhiteSpace($deliveryJson)) {
 $profileMap = @{
     operator = @{
         ConfigFile = "operator.mailbox_client.json"
-        PromptFile = "docs\dogfood-high-operator-oncall-prompt.txt"
+        PromptFile = "docs\operator-oncall-prompt.txt"
         DefaultEffort = "high"
-        LoginArgs = @(
-            "--project-id", "mail4agent",
-            "--local-part", "operator",
-            "--mailbox-type", "group",
-            "--agent-name", "dogfood-operator"
-        )
     }
     plugin_dev = @{
         ConfigFile = "plugin_dev.mailbox_client.json"
@@ -76,11 +70,11 @@ $configPath = Join-Path $runtimePath ([string]$selected.ConfigFile)
 $promptPath = Join-Path $workspaceRoot ([string]$selected.PromptFile)
 $lastMessagePath = Join-Path $runtimePath "$Role-oncall-last-message.txt"
 $deliveryPath = Join-Path $runtimePath "$Role-current-delivery.json"
-$sandboxRuntimeDir = Join-Path $workspaceRoot (Join-Path ".tmp_dogfood_live" "$Role-oncall")
+$sandboxRuntimeDir = Join-Path $workspaceRoot (Join-Path ".tmp_oncall_live" "$Role-oncall")
 $sandboxConfigPath = Join-Path $sandboxRuntimeDir ([string]$selected.ConfigFile)
 $sandboxDeliveryPath = Join-Path $sandboxRuntimeDir "$Role-current-delivery.json"
 $codexHome = if ([string]::IsNullOrWhiteSpace($CodexHomeDir)) {
-    Join-Path $workspaceRoot ".codex_home_dogfood"
+    Join-Path $workspaceRoot ".codex_home_oncall"
 }
 elseif ([System.IO.Path]::IsPathRooted($CodexHomeDir)) {
     $CodexHomeDir
@@ -91,13 +85,13 @@ else {
 $globalCodexHome = Join-Path $env:USERPROFILE ".codex"
 
 if (-not (Test-Path $tokenPath)) {
-    throw "Missing $tokenPath. Run dogfood_smoke_bootstrap.py first."
+    throw "Missing $tokenPath. Bootstrap the runtime directory first."
 }
 if (-not (Test-Path $summaryPath)) {
-    throw "Missing $summaryPath. Run dogfood_smoke_bootstrap.py first."
+    throw "Missing $summaryPath. Bootstrap the runtime directory first."
 }
 if (-not (Test-Path $configPath)) {
-    throw "Missing $configPath. Run dogfood_smoke_bootstrap.py first."
+    throw "Missing $configPath. Bootstrap the runtime directory first."
 }
 if (-not (Test-Path $promptPath)) {
     throw "Missing $promptPath."

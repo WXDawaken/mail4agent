@@ -7,7 +7,13 @@ __pycache__/
 *-shm
 *.token
 session.token
+AGENTS.md
+.where-agent-progress.md
 .tmp*
 .tmp_dogfood/
 .codex_home_dogfood/
-docs/dogfood-wave1-last-message.txt
+.codex_home_oncall/
+docs/dogfood-*
+dogfood_*.py
+launch_dogfood*.ps1
+test/test_wave1_dogfood_features.py

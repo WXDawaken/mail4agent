@@ -9,27 +9,27 @@ It defines the smallest code and state split that makes a future `oncall server`
 
 ### Mailbox-Side Runtime
 
-- [E:\agent_misc\mail4agent\sqlite_mailbox.py](E:\agent_misc\mail4agent\sqlite_mailbox.py)
+- [sqlite_mailbox.py](../sqlite_mailbox.py)
   - delivery storage and selection
   - `claim_any(...)`
   - mailbox-thread serialization behavior
-- [E:\agent_misc\mail4agent\sqlite_mailbox_http.py](E:\agent_misc\mail4agent\sqlite_mailbox_http.py)
+- [sqlite_mailbox_http.py](../sqlite_mailbox_http.py)
   - HTTP routes
   - `/claim`, `/ack`, `/nack`, `/heartbeat`
-- [E:\agent_misc\mail4agent\codex_mailbox_client.py](E:\agent_misc\mail4agent\codex_mailbox_client.py)
+- [codex_mailbox_client.py](../codex_mailbox_client.py)
   - HTTP client wrapper used by CLI and oncall
 
 ### Current Worker / Oncall Runtime
 
-- [E:\agent_misc\mail4agent\mailbox_worker.py](E:\agent_misc\mail4agent\mailbox_worker.py)
+- [mailbox_worker.py](../mailbox_worker.py)
   - generic `claim -> heartbeat -> ack/nack` loop
   - subprocess handler execution
-- [E:\agent_misc\mail4agent\mailbox_oncall.py](E:\agent_misc\mail4agent\mailbox_oncall.py)
+- [mailbox_oncall.py](../mailbox_oncall.py)
   - role config
   - claim-address resolution
   - once/watch supervision
   - summary JSON output
-- [E:\agent_misc\mail4agent\launch_dogfood_oncall_agent.ps1](E:\agent_misc\mail4agent\launch_dogfood_oncall_agent.ps1)
+- [launch_oncall_agent.ps1](../launch_oncall_agent.ps1)
   - current execution backend adapter for Codex CLI
   - login bootstrap
   - staging claimed delivery into repo-visible runtime files
@@ -40,7 +40,7 @@ The current split is already half-way there:
 
 - `mailbox_worker.py` is the reusable consume primitive
 - `mailbox_oncall.py` is the first supervision layer
-- `launch_dogfood_oncall_agent.ps1` is the execution adapter
+- `launch_oncall_agent.ps1` is the execution adapter
 
 What is still missing is a clean state boundary.
 
@@ -116,7 +116,7 @@ Owns:
 
 It should hide details currently embedded in:
 
-- [E:\agent_misc\mail4agent\launch_dogfood_oncall_agent.ps1](E:\agent_misc\mail4agent\launch_dogfood_oncall_agent.ps1)
+- [launch_oncall_agent.ps1](../launch_oncall_agent.ps1)
 
 The current PowerShell launcher can remain, but the Python side should treat it as one backend adapter.
 
@@ -230,7 +230,7 @@ Refactor current code without changing behavior:
 - add `oncall_supervisor.py`
 - add `oncall_registry.py`
 - move current summary-file writes into registry helpers
-- keep `launch_dogfood_oncall_agent.ps1` unchanged
+- keep `launch_oncall_agent.ps1` unchanged
 
 ### Step 2
 
@@ -268,4 +268,4 @@ That yields immediate benefits:
 - easier future app-server backend swap
 - no new durability risk yet
 
-It also keeps the current dogfood path working while preparing for the more ambitious thread-sticky model.
+It also keeps the current oncall path working while preparing for the more ambitious thread-sticky model.

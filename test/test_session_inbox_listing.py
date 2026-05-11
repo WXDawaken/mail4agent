@@ -28,7 +28,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-http-from-address",
-            session_name="dogfood-inbox-http-from-address",
+            session_name="fixture-inbox-http-from-address",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -63,7 +63,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-http",
-            session_name="dogfood-inbox-http",
+            session_name="fixture-inbox-http",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -120,7 +120,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-http-since",
-            session_name="dogfood-inbox-http-since",
+            session_name="fixture-inbox-http-since",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -181,7 +181,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-http-unread",
-            session_name="dogfood-inbox-http-unread",
+            session_name="fixture-inbox-http-unread",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -254,7 +254,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-http-thread-id",
-            session_name="dogfood-inbox-http-thread-id",
+            session_name="fixture-inbox-http-thread-id",
         )
         session_token = auth_token_for_client(reviewer_session)
 
@@ -301,7 +301,7 @@ class SessionInboxListingTests(MailboxHTTPFeatureTestCase):
             self.tokens["codex"],
             role="reviewer",
             consumer_id="python-inbox-cli",
-            session_name="dogfood-inbox-cli",
+            session_name="fixture-inbox-cli",
         )
         session_token = auth_token_for_client(reviewer_session)
 
